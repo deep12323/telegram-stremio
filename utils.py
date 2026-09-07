@@ -363,7 +363,7 @@ _LANG_DEFINITIONS = [
     ("nep", ["nepali"], ["nep"]),
     ("sin", ["sinhala", "sinhalese"], ["sin"]),
     ("tag", ["tagalog", "filipino"], ["tag", "fil"]),
-    ("spa", ["spanish", "castellano", "espanol", "español"], ["spa", "esp", "es"]),
+    ("spa", ["spanish", "castellano", "espanol", "español", "latino"], ["spa", "esp", "es"]),
     ("fre", ["french", "francais", "français"], ["fre", "fra", "fr"]),
     ("ger", ["german", "deutsch"], ["ger", "deu", "de"]),
     ("ita", ["italian", "italiano"], ["ita", "it"]),
@@ -474,18 +474,11 @@ def parse_audio_languages(
     detected.sort(key=lambda x: x[0])
     detected_codes = [c for _, c in detected]
 
-    if is_explicit_multi:
-        if len(detected_codes) <= 1:
-            return "multi"
-        elif len(detected_codes) >= 3:
-            return "multi"
-        elif len(detected_codes) == 2:
-            return ",".join(detected_codes)
-
-    if len(detected_codes) >= 3:
-        return "multi"
-    elif len(detected_codes) >= 1:
+    if detected_codes:
         return ",".join(detected_codes)
+
+    if is_explicit_multi:
+        return "multi"
 
     return default
 
