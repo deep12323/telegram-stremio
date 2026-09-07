@@ -2,6 +2,7 @@ import re
 import logging
 import unicodedata
 import httpx
+from typing import Optional, List, Tuple
 
 logger = logging.getLogger("utils")
 
@@ -317,5 +318,175 @@ def get_mime_type(filename: str, default_mime: str = None) -> str:
     if fn.endswith(".m4v"):
         return "video/x-m4v"
     return default_mime or "video/mp4"
+
+_SITE_AND_GROUP_PATTERNS = [
+    re.compile(r'@\S+', re.IGNORECASE),
+    re.compile(r'\b(?:1tamilmv|tamilmv|themoviesboss|udevmy|skymovieshd|moviesmod|bollyflix|vegamovies|katmoviehd|cinemaluxe|yify|yts|rarbg|galaxyrg|qxr|ion10|psa)\b', re.IGNORECASE),
+]
+
+_NOISE_STRIP_PATTERNS = [
+    re.compile(r'\b(?:hi10p?|high10|hevc|h264|h265|x264|x265|ddp5\.1|dd5\.1|dts-hd|truehd|atmos|aac2\.0|aac|ac3|eac3|dts|mp3|opus|flac)\b', re.IGNORECASE),
+    re.compile(r'\b(?:sci-fi|hi-fi|hi-res|hi-def)\b', re.IGNORECASE),
+    re.compile(r'\b(?:2160p|1080p|720p|480p|360p|4k|8k|uhd|fhd|hd|sd)\b', re.IGNORECASE),
+    re.compile(r'\b(?:web-?dl|web-?rip|bluray|brrip|bdrip|hdrip|dvdrip|hdtc|hdts|camrip|cam|screener|scr|telesync)\b', re.IGNORECASE),
+    re.compile(r'\b(?:proper|repack|unrated|extended|imax|remastered|uncut|directors\.cut)\b', re.IGNORECASE),
+    re.compile(r'\b(?:10bit|8bit|hdr10\+?|hdr|dv|dolby\.vision|sdr)\b', re.IGNORECASE),
+    re.compile(r'\b(?:clean|cleaned|org|original)\b', re.IGNORECASE),
+]
+
+_SUB_STRIP_PATTERNS = [
+    re.compile(r'\b[a-z]{2,10}[\s._\-]*(?:subs?|subtitles?)\b', re.IGNORECASE),
+    re.compile(r'\b(?:e|m|soft|hard|vob|pgs|idx)?subs?(?:title)?s?\b', re.IGNORECASE),
+    re.compile(r'\[[^\]]*\b(?:sub|subs|subtitles?)\b[^\]]*\]', re.IGNORECASE),
+    re.compile(r'\([^\)]*\b(?:sub|subs|subtitles?)\b[^\)]*\)', re.IGNORECASE),
+]
+
+_MULTI_EXPLICIT_PATTERN = re.compile(
+    r'\b(?:multi(?:[\s._\-]*(?:audio|dub|subs?|lang|language))?|multiple[\s._\-]*audio|tri[\s._\-]*audio|quad[\s._\-]*audio|dual[\s._\-]*audio)\b',
+    re.IGNORECASE
+)
+
+_LANG_DEFINITIONS = [
+    ("hi", ["hindi", "hind"], ["hin", "hi"]),
+    ("eng", ["english"], ["eng", "en"]),
+    ("tam", ["tamil"], ["tam", "ta"]),
+    ("tel", ["telugu"], ["tel", "te"]),
+    ("mal", ["malayalam"], ["mal", "ml"]),
+    ("kan", ["kannada"], ["kan", "kn"]),
+    ("ben", ["bengali", "bangla"], ["ben", "bng", "bn"]),
+    ("pun", ["punjabi"], ["pun", "pan", "pa"]),
+    ("mar", ["marathi"], ["mar", "mr"]),
+    ("guj", ["gujarati"], ["guj", "gu"]),
+    ("urd", ["urdu"], ["urd", "ur"]),
+    ("ori", ["odia", "oriya"], ["ori"]),
+    ("asm", ["assamese"], ["asm"]),
+    ("nep", ["nepali"], ["nep"]),
+    ("sin", ["sinhala", "sinhalese"], ["sin"]),
+    ("tag", ["tagalog", "filipino"], ["tag", "fil"]),
+    ("spa", ["spanish", "castellano", "espanol", "español"], ["spa", "esp", "es"]),
+    ("fre", ["french", "francais", "français"], ["fre", "fra", "fr"]),
+    ("ger", ["german", "deutsch"], ["ger", "deu", "de"]),
+    ("ita", ["italian", "italiano"], ["ita", "it"]),
+    ("por", ["portuguese", "portugues", "português"], ["por", "pt", "pt-br"]),
+    ("rus", ["russian"], ["rus", "ru"]),
+    ("jap", ["japanese"], ["jap", "jpn", "ja"]),
+    ("kor", ["korean"], ["kor", "ko"]),
+    ("chi", ["chinese", "mandarin", "cantonese"], ["chi", "zho", "zh"]),
+    ("ara", ["arabic"], ["ara", "ar"]),
+    ("tur", ["turkish"], ["tur", "tr"]),
+    ("tha", ["thai"], ["tha", "th"]),
+    ("vie", ["vietnamese"], ["vie", "vi"]),
+    ("ind", ["indonesian"], ["ind", "id"]),
+    ("heb", ["hebrew"], ["heb", "he"]),
+    ("pol", ["polish"], ["pol", "pl"]),
+    ("dut", ["dutch"], ["dut", "nld", "nl"]),
+    ("swe", ["swedish"], ["swe", "sv"]),
+    ("ukr", ["ukrainian"], ["ukr", "uk"]),
+]
+
+_COMPOUND_SEP = r'[\s+\-_/&,.:|]'
+
+def _clean_text_for_lang_detection(text: str, title: Optional[str] = None) -> str:
+    if not text:
+        return ""
+    t = text.replace("_", " ")
+
+    for p in _SITE_AND_GROUP_PATTERNS:
+        t = p.sub(' ', t)
+
+    if title:
+        title_words = re.findall(r'\b[a-zA-Z0-9]+\b', title)
+        for tw in title_words:
+            if len(tw) >= 2:
+                t = re.sub(rf'\b{re.escape(tw)}\b', ' ', t, flags=re.IGNORECASE)
+
+    for p in _NOISE_STRIP_PATTERNS:
+        t = p.sub(' ', t)
+
+    for p in _SUB_STRIP_PATTERNS:
+        t = p.sub(' ', t)
+
+    return t
+
+def _extract_caption_audio_section(caption: str) -> Optional[str]:
+    if not caption:
+        return None
+    m = re.search(r'(?:^|\n)\s*(?:[🔊🎧🗣️🎙️ℹ️\s]*)(?:audio(?:\s*language)?|language|languages|audios)\s*[:\-]\s*([^\n\r]+)', caption, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+def parse_audio_languages(
+    filename: str = "",
+    caption: str = "",
+    title: Optional[str] = None,
+    default: str = "Telegram File"
+) -> str:
+    """
+    Parses audio language(s) from a Telegram release filename and message caption.
+    Returns:
+      - 'multi' if explicit multi-audio or >= 3 languages are detected
+      - Comma-separated list like 'hi,eng' if 2 languages are detected
+      - Single language code like 'hi' or 'tam' if 1 language is detected
+      - `default` if no audio language could be recognized
+    """
+    raw_combined = f"{filename or ''} {caption or ''}".strip()
+    if not raw_combined:
+        return default
+
+    caption_audio = _extract_caption_audio_section(caption)
+    text_to_check = f"{filename or ''} {caption_audio or caption or ''}"
+
+    is_explicit_multi = bool(_MULTI_EXPLICIT_PATTERN.search(text_to_check.replace("_", " ")))
+
+    cleaned = _clean_text_for_lang_detection(text_to_check, title=title)
+
+    detected = []
+    seen = set()
+
+    for code, full_names, abbrs in _LANG_DEFINITIONS:
+        matched = False
+        match_pos = 999999
+
+        for fn in full_names:
+            m = re.search(rf'\b{re.escape(fn)}\b', cleaned, re.IGNORECASE)
+            if m:
+                matched = True
+                match_pos = min(match_pos, m.start())
+
+        if not matched:
+            for ab in abbrs:
+                if len(ab) >= 3:
+                    m = re.search(rf'\b{re.escape(ab)}\b', cleaned, re.IGNORECASE)
+                else:
+                    m = re.search(rf'(?<=[+.\-/\s\[\(]{_COMPOUND_SEP}){re.escape(ab)}(?=[+.\-/\s\]\)]{_COMPOUND_SEP}|$)', cleaned, re.IGNORECASE)
+                    if not m:
+                        m = re.search(rf'\[[^\]]*\b{re.escape(ab)}\b[^\]]*\]', cleaned, re.IGNORECASE)
+
+                if m:
+                    matched = True
+                    match_pos = min(match_pos, m.start())
+
+        if matched and code not in seen:
+            seen.add(code)
+            detected.append((match_pos, code))
+
+    detected.sort(key=lambda x: x[0])
+    detected_codes = [c for _, c in detected]
+
+    if is_explicit_multi:
+        if len(detected_codes) <= 1:
+            return "multi"
+        elif len(detected_codes) >= 3:
+            return "multi"
+        elif len(detected_codes) == 2:
+            return ",".join(detected_codes)
+
+    if len(detected_codes) >= 3:
+        return "multi"
+    elif len(detected_codes) >= 1:
+        return ",".join(detected_codes)
+
+    return default
 
 
