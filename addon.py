@@ -39,7 +39,8 @@ from utils import (
     parse_split_info,
     is_video_file,
     matches_title,
-    get_mime_type
+    get_mime_type,
+    parse_audio_languages
 )
 from zip_helper import (
     list_zip_files,
@@ -1068,10 +1069,11 @@ async def stream_handler(
                             
                     stream_url = f"{get_addon_url(request)}/stream/zip/{chat_id}/{msg_ids}/{urllib.parse.quote(zip_entry_filename)}{query_param}"
                     subtitles = await find_subtitles_for_video(zip_entry_filename, request=request, api_key=api_key)
+                    lang_label = parse_audio_languages(zip_entry_filename, default="Stream ZIP entry")
                     
                     streams.append({
                         "name": "▶ Telegram ZIP",
-                        "title": f"{zip_entry_filename}\n💾 Stream ZIP entry | 📦 {format_size(file_size)}",
+                        "title": f"{zip_entry_filename}\n💾 {lang_label} | 📦 {format_size(file_size)}",
                         "url": stream_url,
                         "subtitles": subtitles,
                         "behaviorHints": {
@@ -1108,10 +1110,12 @@ async def stream_handler(
                                 total_size += med.file_size
                                 
                     stream_url = f"{get_addon_url(request)}/stream/split/{chat_id}/{msg_ids}/{urllib.parse.quote(base_name)}{query_param}"
+                    first_caption = getattr(first_msg, "caption", "") or ""
+                    lang_label = parse_audio_languages(base_name, caption=first_caption, default="Stitch stream")
                     
                     streams.append({
                         "name": "▶ Telegram (Split)",
-                        "title": f"{base_name}\n💾 Stitch stream | 📦 {format_size(total_size)}",
+                        "title": f"{base_name}\n💾 {lang_label} | 📦 {format_size(total_size)}",
                         "url": stream_url,
                         "behaviorHints": {
                             "notWebReady": True,
@@ -1136,10 +1140,12 @@ async def stream_handler(
                     
                     stream_url = f"{get_addon_url(request)}/stream/file/{chat_id}/{msg_id}/{urllib.parse.quote(file_name)}{query_param}"
                     subtitles = await find_subtitles_for_video(file_name, request=request, api_key=api_key)
+                    caption = getattr(msg, "caption", "") or ""
+                    lang_label = parse_audio_languages(file_name, caption=caption, default="Direct stream")
                     
                     streams.append({
                         "name": "▶ Telegram",
-                        "title": f"{file_name}\n💾 Direct stream | 📦 {format_size(file_size)}",
+                        "title": f"{file_name}\n💾 {lang_label} | 📦 {format_size(file_size)}",
                         "url": stream_url,
                         "subtitles": subtitles,
                         "behaviorHints": {
@@ -1241,9 +1247,10 @@ async def stream_handler(
                                             
                                         stream_url = f"{get_addon_url(request)}/stream/zip/{chat_id}/{msg_ids}/{urllib.parse.quote(entry.filename)}{query_param}"
                                         subtitles = await find_subtitles_for_video(entry.filename, request=request, api_key=api_key, cached_messages=tg_results_flat)
+                                        lang_label = parse_audio_languages(entry.filename, title=movie_name, default="Stream ZIP entry")
                                         valid_streams.append({
                                             "name": f"▶ Telegram ZIP {quality_str}",
-                                            "title": f"{entry.filename}\n💾 Stream ZIP entry | 📦 {format_size(entry.file_size)}",
+                                            "title": f"{entry.filename}\n💾 {lang_label} | 📦 {format_size(entry.file_size)}",
                                             "url": stream_url,
                                             "subtitles": subtitles,
                                             "behaviorHints": {"notWebReady": True},
@@ -1263,9 +1270,11 @@ async def stream_handler(
                             first_media = first_msg.video or first_msg.document or first_msg.audio
                             first_uid = getattr(first_media, "file_unique_id", None) if first_media else None
                             stream_url = f"{get_addon_url(request)}/stream/split/{chat_id}/{msg_ids}/{urllib.parse.quote(base_name)}{query_param}"
+                            first_caption = getattr(first_msg, "caption", "") or ""
+                            lang_label = parse_audio_languages(base_name, caption=first_caption, title=movie_name, default="Stitch stream")
                             valid_streams.append({
                                 "name": f"▶ Telegram Split {quality_str}",
-                                "title": f"{base_name}\n💾 Stitch stream | 📦 {format_size(total_size)}",
+                                "title": f"{base_name}\n💾 {lang_label} | 📦 {format_size(total_size)}",
                                 "url": stream_url,
                                 "behaviorHints": {"notWebReady": True},
                                 "_quality": quality_tier(quality_str),
@@ -1319,9 +1328,10 @@ async def stream_handler(
                                             
                                         stream_url = f"{get_addon_url(request)}/stream/zip/{chat_id}/{msg.id}/{urllib.parse.quote(entry.filename)}{query_param}"
                                         subtitles = await find_subtitles_for_video(entry.filename, request=request, api_key=api_key, cached_messages=tg_results_flat)
+                                        lang_label = parse_audio_languages(entry.filename, title=movie_name, default="Stream ZIP entry")
                                         valid_streams.append({
                                             "name": f"▶ Telegram ZIP {quality_str}",
-                                            "title": f"{entry.filename}\n💾 Stream ZIP entry | 📦 {format_size(entry.file_size)}",
+                                            "title": f"{entry.filename}\n💾 {lang_label} | 📦 {format_size(entry.file_size)}",
                                             "url": stream_url,
                                             "subtitles": subtitles,
                                             "behaviorHints": {"notWebReady": True},
@@ -1340,10 +1350,11 @@ async def stream_handler(
                                 continue
                             stream_url = f"{get_addon_url(request)}/stream/file/{chat_id}/{msg.id}/{urllib.parse.quote(file_name)}{query_param}"
                             subtitles = await find_subtitles_for_video(file_name, request=request, api_key=api_key, cached_messages=tg_results_flat)
+                            lang_label = parse_audio_languages(file_name, caption=caption, title=movie_name, default="Telegram File")
                             
                             valid_streams.append({
                                 "name": f"▶ Telegram {quality_str}",
-                                "title": f"{file_name}\n💾 Telegram File | 📦 {format_size(file_size)}",
+                                "title": f"{file_name}\n💾 {lang_label} | 📦 {format_size(file_size)}",
                                 "url": stream_url,
                                 "subtitles": subtitles,
                                 "behaviorHints": {"notWebReady": True},
@@ -1354,6 +1365,7 @@ async def stream_handler(
                                 "_clean_name": normalize_release_name(file_name),
                                 "_unique_id": uid
                             })
+
                             
                 valid_streams.sort(key=lambda x: (x.get("_size", 0), x.get("_quality", 0), x.get("_score", 0)), reverse=True)
                 
