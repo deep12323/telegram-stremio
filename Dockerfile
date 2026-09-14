@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up a non-root application user
+# Set up a new user named "user" with UID 1000 (required by Hugging Face Spaces)
 RUN useradd -m -u 1000 user
 
 WORKDIR /app
@@ -24,8 +24,8 @@ COPY --chown=user:user . .
 # Switch to the non-root user
 USER user
 
-# Expose port (default 7860)
+# Expose port (Hugging Face Spaces runs on 7860)
 EXPOSE 7860
 
 # Command to run the addon dynamically supporting optional auto-update
-CMD ["sh", "-c", "if [ \"$AUTO_UPDATE\" = \"true\" ]; then echo 'Auto-update enabled. Cloning latest code...'; git clone --depth=1 ${GITHUB_REPO_URL:-https://github.com/stremio-telegram-debrid/stremio-telegram-debrid.git} /tmp/app && cp -r /tmp/app/* . && rm -rf /tmp/app && pip install --no-cache-dir --user -r requirements.txt tgcrypto; fi && uvicorn addon:app --host 0.0.0.0 --port ${PORT:-7860}"]
+CMD ["sh", "-c", "if [ \"$AUTO_UPDATE\" = \"true\" ]; then echo 'Auto-update enabled. Cloning latest code...'; git clone --depth=1 ${GITHUB_REPO_URL:-https://github.com/deepu2135/telegram-stremio.git} /tmp/app && cp -r /tmp/app/* . && rm -rf /tmp/app && pip install --no-cache-dir --user -r requirements.txt tgcrypto; fi && uvicorn addon:app --host 0.0.0.0 --port ${PORT:-7860}"]
