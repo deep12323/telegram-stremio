@@ -349,27 +349,29 @@ class TelegramClientManager:
     def initialize(self):
         Config.validate()
         
+        client_kwargs = {
+            "api_id": Config.API_ID,
+            "api_hash": Config.API_HASH,
+            "in_memory": True,
+            "no_updates": True,
+        }
+        # Check if the installed Pyrogram fork supports max_concurrent_transmissions
+        if "max_concurrent_transmissions" in inspect.signature(Client.__init__).parameters:
+            client_kwargs["max_concurrent_transmissions"] = 20
+
         if Config.USER_SESSION_STRING:
             logger.info("Initializing User Client...")
             self.client = Client(
                 name="tg_stremio_user",
-                api_id=Config.API_ID,
-                api_hash=Config.API_HASH,
                 session_string=Config.USER_SESSION_STRING,
-                in_memory=True,
-                no_updates=True,
-                max_concurrent_transmissions=20
+                **client_kwargs
             )
         elif Config.BOT_TOKEN:
             logger.info("Initializing Bot Client...")
             self.client = Client(
                 name="tg_stremio_bot",
-                api_id=Config.API_ID,
-                api_hash=Config.API_HASH,
                 bot_token=Config.BOT_TOKEN,
-                in_memory=True,
-                no_updates=True,
-                max_concurrent_transmissions=20
+                **client_kwargs
             )
         else:
             raise ValueError("Neither USER_SESSION_STRING nor BOT_TOKEN is configured!")
