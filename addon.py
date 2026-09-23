@@ -59,7 +59,9 @@ from zip_helper import (
     list_zip_files,
     TelegramSeekableReader,
     get_zip_entry_data_offset,
-    zip_compressed_generator
+    zip_compressed_generator,
+    parse_zip_local_headers,
+    is_video_file
 )
 from search_matcher import TelegramSearchMatcher, parse_quality, quality_tier, SCORE_THRESHOLD
 
@@ -1506,7 +1508,7 @@ async def subtitles_handler(
             
     return {"subtitles": subtitles}
 
-@app.api_route("/stream/subtitle/{chat_id}/{message_id}/{filename}", methods=["GET", "HEAD"])
+@app.api_route("/stream/subtitle/{chat_id}/{message_id}/{filename:path}", methods=["GET", "HEAD"])
 async def tg_subtitle_proxy(
     chat_id: str, 
     message_id: int, 
@@ -1570,7 +1572,7 @@ async def tg_subtitle_proxy(
         headers=headers
     )
 
-@app.api_route("/stream/file/{chat_id}/{message_id}/{filename}", methods=["GET", "HEAD"])
+@app.api_route("/stream/file/{chat_id}/{message_id}/{filename:path}", methods=["GET", "HEAD"])
 async def tg_stream_proxy(
     chat_id: str, 
     message_id: int, 
@@ -1602,22 +1604,6 @@ async def tg_stream_proxy(
     mime_type = get_mime_type(filename, media.mime_type)
     
     range_header = request.headers.get("Range")
-    
-    # Require Range header for large media (> 5MB) on GET requests:
-    # Reject un-ranged GET requests to prevent duplicate full downloads and ghost streams
-    if request.method == "GET" and not range_header and file_size > 5 * 1024 * 1024:
-        logger.warning(
-            f"Rejecting un-ranged GET request for large media '{filename}' ({file_size} bytes). "
-            "Range header is required for streaming."
-        )
-        raise HTTPException(
-            status_code=416,
-            detail="Range header required for media streaming",
-            headers={
-                "Content-Range": f"bytes */{file_size}",
-                "Accept-Ranges": "bytes"
-            }
-        )
     
     if request.method == "GET":
         asyncio.create_task(
@@ -1736,7 +1722,7 @@ async def tg_stream_proxy(
         headers=headers
     )
 
-@app.api_route("/stream/split/{chat_id}/{message_ids}/{filename}", methods=["GET", "HEAD"])
+@app.api_route("/stream/split/{chat_id}/{message_ids}/{filename:path}", methods=["GET", "HEAD"])
 async def tg_split_stream_proxy(
     chat_id: str, 
     message_ids: str, 
@@ -1792,22 +1778,6 @@ async def tg_split_stream_proxy(
             raise HTTPException(status_code=500, detail="Failed resolving split file metadata")
             
     range_header = request.headers.get("Range")
-    
-    # Require Range header for large split media (> 5MB) on GET requests:
-    # Reject un-ranged GET requests to prevent duplicate full downloads and ghost streams
-    if request.method == "GET" and not range_header and total_size > 5 * 1024 * 1024:
-        logger.warning(
-            f"Rejecting un-ranged GET request for large split media '{filename}' ({total_size} bytes). "
-            "Range header is required for streaming."
-        )
-        raise HTTPException(
-            status_code=416,
-            detail="Range header required for media streaming",
-            headers={
-                "Content-Range": f"bytes */{total_size}",
-                "Accept-Ranges": "bytes"
-            }
-        )
     
     start = 0
     end = total_size - 1
@@ -1910,7 +1880,7 @@ async def tg_split_stream_proxy(
         headers=headers
     )
 
-@app.api_route("/stream/zip/{chat_id}/{message_ids}/{filename}", methods=["GET", "HEAD"])
+@app.api_route("/stream/zip/{chat_id}/{message_ids}/{filename:path}", methods=["GET", "HEAD"])
 async def tg_zip_stream_proxy(
     chat_id: str,
     message_ids: str,
@@ -1948,17 +1918,65 @@ async def tg_zip_stream_proxy(
     if not messages:
         raise HTTPException(status_code=404, detail="Messages not found")
         
+    reader = TelegramSeekableReader(tg_client_manager.client, messages)
     zip_entries = await list_zip_files(tg_client_manager.client, messages)
+    
     target_entry = None
-    for entry in zip_entries:
-        if entry.filename == filename:
-            target_entry = entry
-            break
-            
+    if zip_entries:
+        # 1. Exact match or URL-unquoted match
+        unquoted_req = urllib.parse.unquote(filename)
+        for entry in zip_entries:
+            if entry.filename == filename or urllib.parse.unquote(entry.filename) == unquoted_req:
+                target_entry = entry
+                break
+                
+        # 2. Basename match (case-insensitive)
+        if not target_entry:
+            fn_base = os.path.basename(unquoted_req).lower()
+            for entry in zip_entries:
+                if os.path.basename(entry.filename).lower() == fn_base:
+                    target_entry = entry
+                    break
+                    
+        # 3. Normalized path match
+        if not target_entry:
+            fn_norm = unquoted_req.strip("/").lower()
+            for entry in zip_entries:
+                if entry.filename.strip("/").lower() == fn_norm:
+                    target_entry = entry
+                    break
+
+        # 4. If only one video entry in the archive, pick it
+        if not target_entry:
+            video_entries = [e for e in zip_entries if is_video_file(e.filename)]
+            if len(video_entries) == 1:
+                target_entry = video_entries[0]
+            elif len(video_entries) > 1:
+                target_entry = max(video_entries, key=lambda e: getattr(e, "file_size", 0))
+                
+        # 5. Fallback to single entry
+        if not target_entry and len(zip_entries) == 1:
+            target_entry = zip_entries[0]
+
+    # Teleflix-style fallback: If central directory failed and zip_entries is empty,
+    # inspect the first block directly for a STORED (uncompressed) stream
+    if not target_entry:
+        first_block = await reader.fetch_block(0, 0)
+        local_entries = parse_zip_local_headers(first_block, total_size=reader.total_size)
+        if local_entries:
+            target_entry = local_entries[0]
+
     if not target_entry:
         raise HTTPException(status_code=404, detail=f"File '{filename}' not found in ZIP archive")
         
-    file_size = target_entry.file_size
+    file_size = getattr(target_entry, "file_size", 0)
+    data_start = 0
+    import zipfile
+    if target_entry.compress_type == zipfile.ZIP_STORED:
+        data_start = await get_zip_entry_data_offset(reader, getattr(target_entry, "header_offset", 0))
+        if file_size <= 0 or file_size == 0xFFFFFFFF:
+            file_size = max(0, reader.total_size - data_start)
+
     mime_type = "video/mp4"
     filename_lower = filename.lower()
     if filename_lower.endswith(".mkv"):
@@ -1969,23 +1987,6 @@ async def tg_zip_stream_proxy(
         mime_type = "video/x-msvideo"
         
     range_header = request.headers.get("Range")
-    
-    # Require Range header for large zip media (> 5MB) on GET requests:
-    # Reject un-ranged GET requests to prevent duplicate full downloads and ghost streams
-    if request.method == "GET" and not range_header and file_size > 5 * 1024 * 1024:
-        logger.warning(
-            f"Rejecting un-ranged GET request for large zip media '{filename}' ({file_size} bytes). "
-            "Range header is required for streaming."
-        )
-        raise HTTPException(
-            status_code=416,
-            detail="Range header required for media streaming",
-            headers={
-                "Content-Range": f"bytes */{file_size}",
-                "Accept-Ranges": "bytes"
-            }
-        )
-    
     start = 0
     end = file_size - 1
     
@@ -2021,12 +2022,8 @@ async def tg_zip_stream_proxy(
             headers=headers
         )
         
-    import zipfile
     if target_entry.compress_type == zipfile.ZIP_STORED:
         logger.info(f"ZIP entry '{filename}' is STORED (uncompressed). Using direct offset proxy.")
-        reader = TelegramSeekableReader(tg_client_manager.client, messages)
-        data_start = await get_zip_entry_data_offset(reader, target_entry.header_offset)
-        
         stream_start = data_start + start
         stream_end = data_start + end
         stream_len = stream_end - stream_start + 1
@@ -2036,6 +2033,7 @@ async def tg_zip_stream_proxy(
         
         for part in reader.parts:
             chunks_info.append({
+                "msg": part["message"],
                 "media": part["media"],
                 "size": part["size"],
                 "start_byte": part["start"],
@@ -2066,7 +2064,7 @@ async def tg_zip_stream_proxy(
                 bytes_to_skip = skip_bytes
                 
                 try:
-                    async for block in tg_client_manager.client.stream_media(chunk["media"], offset=offset_blocks):
+                    async for block in tg_client_manager.client.stream_media(chunk["msg"], offset=offset_blocks):
                         if bytes_to_skip > 0:
                             if bytes_to_skip < len(block):
                                 block = block[bytes_to_skip:]
@@ -2084,6 +2082,9 @@ async def tg_zip_stream_proxy(
                         
                         if chunk_bytes_sent >= chunk_read_len:
                             break
+                except asyncio.CancelledError:
+                    logger.info(f"Stream cancelled by client for zip media '{filename}'")
+                    break
                 except Exception as e:
                     err_name = type(e).__name__
                     if "FloodWait" in err_name or "FLOOD_WAIT" in str(e).upper():
@@ -2108,9 +2109,8 @@ async def tg_zip_stream_proxy(
         )
     else:
         logger.info(f"ZIP entry '{filename}' is COMPRESSED (type {target_entry.compress_type}). Streaming on-the-fly decompression.")
-        reader = TelegramSeekableReader(tg_client_manager.client, messages)
         return StreamingResponse(
-            zip_compressed_generator(reader, filename, start, end),
+            zip_compressed_generator(reader, target_entry.filename, start, end),
             status_code=status_code,
             media_type=mime_type,
             headers=headers

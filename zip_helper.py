@@ -145,19 +145,80 @@ class SyncTelegramFile(io.RawIOBase):
         return data
 
 
+def parse_zip_local_headers(data: bytes, total_size: int = 0) -> list:
+    """
+    Parses ZIP local file header(s) directly from the start of the stream.
+    Supports multi-part (.zip.001), spanned, and Zip64 archives where python's
+    zipfile module fails because it cannot read central directories.
+    """
+    entries = []
+    off = 0
+    import struct
+    while off + 30 <= len(data):
+        if data[off:off+4] != b"PK\x03\x04":
+            break
+            
+        comp_method, = struct.unpack('<H', data[off+8:off+10])
+        comp_size, uncomp_size = struct.unpack('<II', data[off+18:off+26])
+        name_len, extra_len = struct.unpack('<HH', data[off+26:off+30])
+        
+        if off + 30 + name_len > len(data):
+            break
+            
+        name_bytes = data[off+30:off+30+name_len]
+        try:
+            name = name_bytes.decode('utf-8')
+        except Exception:
+            name = name_bytes.decode('latin1', errors='replace')
+            
+        extra = data[off+30+name_len:min(len(data), off+30+name_len+extra_len)]
+        e_off = 0
+        while e_off + 4 <= len(extra):
+            eid, esize = struct.unpack('<HH', extra[e_off:e_off+4])
+            if eid == 1:  # Zip64 Extra Field
+                z64_data = extra[e_off+4:e_off+4+esize]
+                if len(z64_data) >= 8 and (uncomp_size == 0xFFFFFFFF or uncomp_size == 0):
+                    uncomp_size, = struct.unpack('<Q', z64_data[:8])
+                if len(z64_data) >= 16 and (comp_size == 0xFFFFFFFF or comp_size == 0):
+                    comp_size, = struct.unpack('<Q', z64_data[8:16])
+                break
+            e_off += 4 + esize
+            
+        data_offset = off + 30 + name_len + extra_len
+        if (uncomp_size == 0 or uncomp_size == 0xFFFFFFFF) and comp_method == 0 and total_size > data_offset:
+            uncomp_size = total_size - data_offset
+            comp_size = uncomp_size
+            
+        zinfo = zipfile.ZipInfo(name)
+        zinfo.compress_type = comp_method
+        zinfo.file_size = uncomp_size
+        zinfo.compress_size = comp_size
+        zinfo.header_offset = off
+        
+        if not name.endswith('/'):
+            entries.append(zinfo)
+            
+        if comp_method == 0 and comp_size > 0 and off + data_offset + comp_size < len(data):
+            off += data_offset + comp_size
+        else:
+            break
+            
+    return entries
+
+
 def list_zip_files_sync(reader: TelegramSeekableReader, loop: asyncio.AbstractEventLoop) -> list:
     sync_file = SyncTelegramFile(reader, loop)
     try:
         with zipfile.ZipFile(sync_file) as zf:
             return zf.infolist()
     except Exception as e:
-        logger.error(f"Failed to list ZIP files: {e}")
+        logger.warning(f"Standard central directory parse failed ({e}). Falling back to local header scan.")
         return []
 
 
 async def list_zip_files(client, messages: Union[Message, List[Message]]) -> list:
     reader = TelegramSeekableReader(client, messages)
-    if reader.total_size < 4:
+    if reader.total_size < 30:
         return []
         
     # Check if first part starts with ZIP signature
@@ -165,6 +226,13 @@ async def list_zip_files(client, messages: Union[Message, List[Message]]) -> lis
     if not first_block.startswith(b"PK\x03\x04"):
         return []
         
+    # Fast path: Try parsing local header directly (Teleflix-compatible)
+    local_entries = parse_zip_local_headers(first_block, total_size=reader.total_size)
+    if local_entries:
+        logger.info(f"Direct local ZIP header matched: {[e.filename for e in local_entries]} (STORED/uncompressed)")
+        return local_entries
+
+    # Fallback to standard central directory reading
     loop = asyncio.get_running_loop()
     return await anyio.to_thread.run_sync(list_zip_files_sync, reader, loop)
 
