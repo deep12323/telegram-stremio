@@ -250,7 +250,7 @@ graph TD
 | `TELEGRAM_CHANNEL_ID` | No | Comma-separated list of channel IDs or usernames to index (`-100..., @channel`). | All joined dialogs |
 | `LOG_CHANNEL_ID` | No | Telegram channel ID where playback activity logs are sent. | `""` |
 | `CACHE_TTL` | No | Search query cache duration in seconds. | `1800` (30 mins) |
-| `PARALLEL_CONNECTIONS` | No | Number of parallel chunk workers for streaming throughput. | `3` |
+| `PARALLEL_CONNECTIONS` | No | Number of parallel chunk workers for streaming throughput. | `2` |
 | `TIMEZONE` | No | Timezone for logs. | `UTC` |
 | `PORT` | No | Server listen port. | `7860` |
 
