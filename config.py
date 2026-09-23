@@ -20,7 +20,10 @@ class Config:
 
     TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
     LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
-    PARALLEL_CONNECTIONS = int(os.getenv("PARALLEL_CONNECTIONS", 2))
+    try:
+        PARALLEL_CONNECTIONS = int(str(os.getenv("PARALLEL_CONNECTIONS", "2")).strip() or 2)
+    except (ValueError, TypeError):
+        PARALLEL_CONNECTIONS = 2
 
     @classmethod
     def validate(cls):
