@@ -1601,12 +1601,29 @@ async def tg_stream_proxy(
     file_size = media.file_size
     mime_type = get_mime_type(filename, media.mime_type)
     
+    range_header = request.headers.get("Range")
+    
+    # Require Range header for large media (> 5MB) on GET requests:
+    # Reject un-ranged GET requests to prevent duplicate full downloads and ghost streams
+    if request.method == "GET" and not range_header and file_size > 5 * 1024 * 1024:
+        logger.warning(
+            f"Rejecting un-ranged GET request for large media '{filename}' ({file_size} bytes). "
+            "Range header is required for streaming."
+        )
+        raise HTTPException(
+            status_code=416,
+            detail="Range header required for media streaming",
+            headers={
+                "Content-Range": f"bytes */{file_size}",
+                "Accept-Ranges": "bytes"
+            }
+        )
+    
     if request.method == "GET":
         asyncio.create_task(
             tg_client_manager.send_play_log(filename, chat_id_val, message_id)
         )
     
-    range_header = request.headers.get("Range")
     start = 0
     end = file_size - 1
     
@@ -1699,6 +1716,13 @@ async def tg_stream_proxy(
                     else:
                         logger.error(f"Max retries exceeded for file reference on msg {message_id}")
                         break
+                elif "FloodWait" in err_name or "FLOOD_WAIT" in str(e).upper():
+                    wait_sec = getattr(e, "value", None) or getattr(e, "x", "several")
+                    logger.error(
+                        f"🚨 [FLOOD WAIT] Telegram rate-limited media stream for '{filename}'! "
+                        f"Required wait: {wait_sec}s. Stream stalled."
+                    )
+                    break
                 else:
                     logger.error(f"Streaming error on message {message_id}: {e}")
                     break
@@ -1768,6 +1792,23 @@ async def tg_split_stream_proxy(
             raise HTTPException(status_code=500, detail="Failed resolving split file metadata")
             
     range_header = request.headers.get("Range")
+    
+    # Require Range header for large split media (> 5MB) on GET requests:
+    # Reject un-ranged GET requests to prevent duplicate full downloads and ghost streams
+    if request.method == "GET" and not range_header and total_size > 5 * 1024 * 1024:
+        logger.warning(
+            f"Rejecting un-ranged GET request for large split media '{filename}' ({total_size} bytes). "
+            "Range header is required for streaming."
+        )
+        raise HTTPException(
+            status_code=416,
+            detail="Range header required for media streaming",
+            headers={
+                "Content-Range": f"bytes */{total_size}",
+                "Accept-Ranges": "bytes"
+            }
+        )
+    
     start = 0
     end = total_size - 1
     
@@ -1846,7 +1887,15 @@ async def tg_split_stream_proxy(
                     if chunk_bytes_sent >= chunk_read_len:
                         break
             except Exception as e:
-                logger.error(f"Error streaming split chunk: {e}")
+                err_name = type(e).__name__
+                if "FloodWait" in err_name or "FLOOD_WAIT" in str(e).upper():
+                    wait_sec = getattr(e, "value", None) or getattr(e, "x", "several")
+                    logger.error(
+                        f"🚨 [FLOOD WAIT] Telegram rate-limited split media stream for '{filename}'! "
+                        f"Required wait: {wait_sec}s. Stream stalled."
+                    )
+                else:
+                    logger.error(f"Error streaming split chunk: {e}")
                 break
                 
             if bytes_sent >= content_length:
@@ -1920,6 +1969,23 @@ async def tg_zip_stream_proxy(
         mime_type = "video/x-msvideo"
         
     range_header = request.headers.get("Range")
+    
+    # Require Range header for large zip media (> 5MB) on GET requests:
+    # Reject un-ranged GET requests to prevent duplicate full downloads and ghost streams
+    if request.method == "GET" and not range_header and file_size > 5 * 1024 * 1024:
+        logger.warning(
+            f"Rejecting un-ranged GET request for large zip media '{filename}' ({file_size} bytes). "
+            "Range header is required for streaming."
+        )
+        raise HTTPException(
+            status_code=416,
+            detail="Range header required for media streaming",
+            headers={
+                "Content-Range": f"bytes */{file_size}",
+                "Accept-Ranges": "bytes"
+            }
+        )
+    
     start = 0
     end = file_size - 1
     
@@ -2019,7 +2085,15 @@ async def tg_zip_stream_proxy(
                         if chunk_bytes_sent >= chunk_read_len:
                             break
                 except Exception as e:
-                    logger.error(f"Error streaming split ZIP chunk: {e}")
+                    err_name = type(e).__name__
+                    if "FloodWait" in err_name or "FLOOD_WAIT" in str(e).upper():
+                        wait_sec = getattr(e, "value", None) or getattr(e, "x", "several")
+                        logger.error(
+                            f"🚨 [FLOOD WAIT] Telegram rate-limited ZIP media stream for '{filename}'! "
+                            f"Required wait: {wait_sec}s. Stream stalled."
+                        )
+                    else:
+                        logger.error(f"Error streaming split ZIP chunk: {e}")
                     break
                     
                 if bytes_sent >= stream_len:
