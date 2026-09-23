@@ -166,16 +166,10 @@ def get_manifest(api_key: str = ""):
             "extra": [{"name": "skip"}]
         })
 
-    # Global search catalogs (always available)
+    # Global search catalog (always available)
     catalogs.append({
         "type": "movie",
         "id": "telegram_search",
-        "name": "Telegram Search",
-        "extra": [{"name": "search", "isRequired": True}, {"name": "skip"}],
-    })
-    catalogs.append({
-        "type": "series",
-        "id": "telegram_search_series",
         "name": "Telegram Search",
         "extra": [{"name": "search", "isRequired": True}, {"name": "skip"}],
     })
