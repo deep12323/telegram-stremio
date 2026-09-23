@@ -36,6 +36,21 @@ async def _patched_auth_create(self):
 
 Auth.create = _patched_auth_create
 
+# Monkey-patch Pyrogram for 64-bit Telegram channel IDs (e.g. -1003905555685)
+# Pyrogram has an outdated 32-bit MIN_CHANNEL_ID (-1002147483647).
+# Modern Telegram channel IDs exceed 2147483647, causing "Peer id invalid".
+utils.MIN_CHANNEL_ID = -100999999999999
+pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
+
+_orig_get_peer_type = utils.get_peer_type
+def _safe_get_peer_type(peer_id: int) -> str:
+    if isinstance(peer_id, int) and peer_id < 0 and peer_id < utils.MAX_CHANNEL_ID:
+        return "channel"
+    return _orig_get_peer_type(peer_id)
+
+utils.get_peer_type = _safe_get_peer_type
+pyrogram.utils.get_peer_type = _safe_get_peer_type
+
 
 class LockedMediaSession:
     def __init__(self, session: Session):
