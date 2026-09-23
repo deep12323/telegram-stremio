@@ -129,7 +129,7 @@ async def _patched_get_file(
             self._custom_media_sessions = {}
             self._custom_sessions_lock = asyncio.Lock()
             
-        pool_size = max(1, min(getattr(Config, "PARALLEL_CONNECTIONS", 3), 16))
+        pool_size = max(1, min(getattr(Config, "PARALLEL_CONNECTIONS", 2), 16))
         prefetch_window = max(1, pool_size - 1)
         
         async with self._custom_sessions_lock:
