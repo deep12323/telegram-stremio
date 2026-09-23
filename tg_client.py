@@ -12,7 +12,7 @@ from pyrogram.types import Message
 from pyrogram.session.auth import Auth
 from pyrogram.session import Session
 from pyrogram.file_id import FileId, FileType, ThumbnailSource
-from pyrogram.errors import VolumeLocNotFound, CDNFileHashMismatch
+from pyrogram.errors import VolumeLocNotFound, CDNFileHashMismatch, FloodWait
 from pyrogram.crypto import aes
 import pyrogram
 from config import Config
@@ -42,8 +42,22 @@ class LockedMediaSession:
         self.session = session
         self.lock = asyncio.Lock()
 
-    async def invoke(self, query):
+    async def invoke(self, query, description: str = "media chunk"):
         async with self.lock:
+            retries = 3
+            while retries > 0:
+                try:
+                    return await self.session.invoke(query, sleep_threshold=0)
+                except FloodWait as e:
+                    retries -= 1
+                    logger.warning(
+                        f"🚨 [FLOOD WAIT] Telegram rate limit active on DC{self.session.dc_id}! "
+                        f"Pausing for {e.value} seconds ({description}). Video playback may buffer/wait."
+                    )
+                    await asyncio.sleep(e.value)
+                    logger.info(f"✅ [FLOOD WAIT] Resumed download on DC{self.session.dc_id} after {e.value}s pause.")
+                except Exception:
+                    raise
             return await self.session.invoke(query, sleep_threshold=30)
 
     async def stop(self):
@@ -154,12 +168,14 @@ async def _patched_get_file(
         try:
             # Helper to fetch a chunk asynchronously using a specific session
             async def fetch_chunk(off_bytes, sess):
+                offset_mb = off_bytes / (1024 * 1024)
                 return await sess.invoke(
                     raw.functions.upload.GetFile(
                         location=location,
                         offset=off_bytes,
                         limit=chunk_size
-                    )
+                    ),
+                    description=f"offset {offset_mb:.1f} MB"
                 )
 
             # Request first chunk using session 0
@@ -534,6 +550,8 @@ class TelegramClientManager:
                 async for msg in self.client.search_global(query=query_str, limit=per_channel_limit):
                     if self._has_media(msg):
                         results.append(msg)
+            except FloodWait as e:
+                logger.warning(f"🚨 [FLOOD WAIT] Global search rate-limited by Telegram! Required wait: {e.value}s.")
             except Exception as e:
                 logger.warning(f"Telegram global search failed: {e}")
         else:
