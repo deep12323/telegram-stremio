@@ -27,6 +27,19 @@ def get_addon_url(request: Request = None) -> str:
         return str(request.base_url).rstrip("/")
     return f"http://localhost:{getattr(Config, 'PORT', 7860)}"
 
+import os
+
+def format_content_disposition(filename: str, disposition: str = "inline") -> str:
+    safe = filename.replace("\r", " ").replace("\n", " ").replace('"', '').replace("'", '').strip()
+    if len(safe) > 100:
+        safe = safe[:97] + "..."
+    ascii_name = safe.encode("ascii", "ignore").decode("ascii").strip()
+    ext = os.path.splitext(safe)[1]
+    if not ascii_name or ascii_name == ext:
+        ascii_name = f"media{ext if ext else '.mp4'}"
+    utf8_name = urllib.parse.quote(safe)
+    return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}'
+
 from config import Config
 from tg_client import tg_client_manager
 from utils import (
@@ -897,6 +910,8 @@ async def meta_handler(type: str, meta_id: str, request: Request, api_key: str =
             
         first_msg = messages[0]
         media = first_msg.video or first_msg.document or first_msg.audio
+        if not media:
+            return {"meta": {}}
         first_fn = getattr(media, "file_name", "video.mp4") or "video.mp4"
         
         if is_zip_entry and zip_entry_filename:
@@ -1528,12 +1543,8 @@ async def tg_subtitle_proxy(
     elif filename_lower.endswith(".ass"):
         content_type = "text/plain"
         
-    safe_filename = filename.replace("\r", " ").replace("\n", " ").replace('"', '').replace("'", '').strip()
-    if len(safe_filename) > 100:
-        safe_filename = safe_filename[:97] + "..."
-        
     headers = {
-        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Content-Disposition": format_content_disposition(filename),
         "Access-Control-Allow-Origin": "*",
         "Content-Length": str(media.file_size),
     }
@@ -1617,14 +1628,10 @@ async def tg_stream_proxy(
     
     status_code = 206 if range_header else 200
     
-    safe_filename = filename.replace("\r", " ").replace("\n", " ").replace('"', '').replace("'", '').strip()
-    if len(safe_filename) > 100:
-        safe_filename = safe_filename[:97] + "..."
-        
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
-        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
@@ -1779,14 +1786,10 @@ async def tg_split_stream_proxy(
     
     status_code = 206 if range_header else 200
     
-    safe_filename = filename.replace("\r", " ").replace("\n", " ").replace('"', '').replace("'", '').strip()
-    if len(safe_filename) > 100:
-        safe_filename = safe_filename[:97] + "..."
-        
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
-        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
@@ -1934,14 +1937,10 @@ async def tg_zip_stream_proxy(
     
     status_code = 206 if range_header else 200
     
-    safe_filename = filename.replace("\r", " ").replace("\n", " ").replace('"', '').replace("'", '').strip()
-    if len(safe_filename) > 100:
-        safe_filename = safe_filename[:97] + "..."
-        
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
-        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
