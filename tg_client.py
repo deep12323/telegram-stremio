@@ -368,7 +368,7 @@ class TelegramClientManager:
             "api_id": Config.API_ID,
             "api_hash": Config.API_HASH,
             "device_model": "stremio",
-            "app_version": "stremio",
+            "app_version": "telegram stremio",
             "system_version": "Linux",
             "in_memory": True,
             "no_updates": True,
