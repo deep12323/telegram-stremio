@@ -25,6 +25,11 @@ class Config:
     except (ValueError, TypeError):
         PARALLEL_CONNECTIONS = 2
 
+    # Enable Telegram Search catalog in Stremio (default: False)
+    _raw_search = os.getenv("ENABLE_TELEGRAM_SEARCH") or os.getenv("ENABLE_SEARCH", "false")
+    ENABLE_TELEGRAM_SEARCH = str(_raw_search).strip().lower() in ("true", "1", "yes", "on")
+    ENABLE_SEARCH = ENABLE_TELEGRAM_SEARCH
+
     @classmethod
     def validate(cls):
         missing = []
