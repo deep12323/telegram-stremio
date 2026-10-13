@@ -181,13 +181,14 @@ def get_manifest(api_key: str = ""):
             "extra": [{"name": "skip"}]
         })
 
-    # Global search catalog (always available)
-    catalogs.append({
-        "type": "movie",
-        "id": "telegram_search",
-        "name": "Telegram Search",
-        "extra": [{"name": "search", "isRequired": True}, {"name": "skip"}],
-    })
+    # Global search catalog (disabled by default; opt-in via ENABLE_TELEGRAM_SEARCH / ENABLE_SEARCH)
+    if Config.ENABLE_TELEGRAM_SEARCH:
+        catalogs.append({
+            "type": "movie",
+            "id": "telegram_search",
+            "name": "Telegram Search",
+            "extra": [{"name": "search", "isRequired": True}, {"name": "skip"}],
+        })
 
     return {
         "id": "community.telegram.stremio.addon",
@@ -650,6 +651,9 @@ async def catalog_handler(
 ):
     addon_base_url = get_addon_url(request)
     if type not in ["movie", "series", "other"]:
+        return {"metas": []}
+
+    if catalog_id == "telegram_search" and not Config.ENABLE_TELEGRAM_SEARCH:
         return {"metas": []}
         
     query = ""
