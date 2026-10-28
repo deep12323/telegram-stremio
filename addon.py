@@ -816,15 +816,35 @@ import os
 
 @app.get("/stremio_telegram_logo.png")
 async def get_logo():
-    if os.path.exists("stremio_telegram_logo.png"):
-        return FileResponse("stremio_telegram_logo.png")
-    return Response(status_code=404)
+    if os.path.exists("stremio_telegram_logo.png") and os.path.getsize("stremio_telegram_logo.png") > 1000:
+        return FileResponse("stremio_telegram_logo.png", media_type="image/png")
+    svg_logo = """<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+      <defs>
+        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#2563eb"/>
+          <stop offset="100%" stop-color="#7c3aed"/>
+        </linearGradient>
+      </defs>
+      <rect width="256" height="256" rx="56" fill="url(#g1)"/>
+      <path d="M72 128 L112 168 L184 88" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>"""
+    return Response(content=svg_logo, media_type="image/svg+xml")
 
 @app.get("/stremio_telegram_banner.png")
 async def get_banner():
-    if os.path.exists("stremio_telegram_banner.png"):
-        return FileResponse("stremio_telegram_banner.png")
-    return Response(status_code=404)
+    if os.path.exists("stremio_telegram_banner.png") and os.path.getsize("stremio_telegram_banner.png") > 1000:
+        return FileResponse("stremio_telegram_banner.png", media_type="image/png")
+    svg_banner = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400">
+      <defs>
+        <linearGradient id="gb" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0f172a"/>
+          <stop offset="100%" stop-color="#1e1b4b"/>
+        </linearGradient>
+      </defs>
+      <rect width="1200" height="400" fill="url(#gb)"/>
+      <text x="600" y="215" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="56" font-weight="bold" fill="#f8fafc" text-anchor="middle">Telegram Stremio Addon</text>
+    </svg>"""
+    return Response(content=svg_banner, media_type="image/svg+xml")
 
 _poster_cache = {}
 
