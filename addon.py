@@ -1357,7 +1357,7 @@ async def stream_handler(
                                 logger.error(f"Error checking split ZIP for IMDB: {e}")
                                 
                         if not is_zip:
-                            if hide_split_streams:
+                            if hide_split_streams and not base_name.lower().endswith(".zip"):
                                 logger.info(f"Hiding split video stream '{base_name}' for {imdb_id} (HIDE_SPLIT_STREAMS enabled)")
                                 continue
                             if not is_video_file(base_name):
@@ -1443,7 +1443,7 @@ async def stream_handler(
                         if not is_zip:
                             if not is_video_file(file_name):
                                 continue
-                            if hide_split_streams and parse_split_info(file_name)[0] is not None:
+                            if hide_split_streams and parse_split_info(file_name)[0] is not None and not file_name.lower().endswith(".zip"):
                                 logger.info(f"Hiding individual split part stream '{file_name}' for {imdb_id} (HIDE_SPLIT_STREAMS enabled)")
                                 continue
                             stream_url = f"{get_addon_url(request)}/stream/file/{chat_id}/{msg.id}/{urllib.parse.quote(file_name)}{query_param}"
