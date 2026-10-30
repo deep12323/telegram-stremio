@@ -561,13 +561,24 @@ class TelegramClientManager:
                 return cached_results
 
         results = []
-        per_channel_limit = max(100, limit)
+        target_chat_ids = self.get_channel_ids()
         
         if query_str:
-            # Use Telegram's global search across ALL channels in the account
+            # 1. Fast path: If target channel(s) are configured, search them first (<50ms, no global FloodWait)
+            if target_chat_ids:
+                for chat_id in target_chat_ids:
+                    try:
+                        async for msg in self.client.search_messages(chat_id=chat_id, query=query_str, limit=min(limit, 50)):
+                            if self._has_media(msg):
+                                results.append(msg)
+                    except Exception as e:
+                        logger.debug(f"Direct channel search failed for {chat_id}: {e}")
+
+            # 2. Global search: search across account's dialogs/channels with bounded limit (max 50 to avoid 25 RPC roundtrips)
+            search_limit = min(limit, 50)
             try:
-                logger.info(f"Performing global search for: '{query_str}'")
-                async for msg in self.client.search_global(query=query_str, limit=per_channel_limit):
+                logger.info(f"Performing global search for: '{query_str}' (limit={search_limit})")
+                async for msg in self.client.search_global(query=query_str, limit=search_limit):
                     if self._has_media(msg):
                         results.append(msg)
             except FloodWait as e:
@@ -575,12 +586,12 @@ class TelegramClientManager:
             except Exception as e:
                 logger.warning(f"Telegram global search failed: {e}")
         else:
-            # For no-query browsing, fall back to channel-specific history if channels are configured
-            chat_ids = self.get_channel_ids()
-            if chat_ids:
-                for chat_id in chat_ids:
+            # For no-query browsing (catalog loading), fetch channel history with requested limit
+            if target_chat_ids:
+                fetch_limit = min(limit, 200)
+                for chat_id in target_chat_ids:
                     try:
-                        async for msg in self.client.get_chat_history(chat_id=chat_id, limit=per_channel_limit):
+                        async for msg in self.client.get_chat_history(chat_id=chat_id, limit=fetch_limit):
                             if self._has_media(msg):
                                 results.append(msg)
                     except Exception as e:
@@ -590,40 +601,49 @@ class TelegramClientManager:
         
         results.sort(key=lambda m: m.date, reverse=True)
         
-        # Resolve all split parts for detected split files to prevent missing segments
-        split_bases = set()
-        for msg in results:
-            media = msg.video or msg.document or msg.audio
-            if media:
-                fn = getattr(media, "file_name", "") or msg.caption or ""
-                base, part = parse_split_info(fn)
-                if base:
-                    # Generate a clean, truncated search query for the split base
-                    search_query = re.sub(r'[^a-zA-Z0-9\s]', ' ', base)
-                    search_query = re.sub(r'\s+', ' ', search_query).strip()
-                    words = search_query.split()
-                    if words and words[-1].lower() in ('mkv', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'm4v', 'zip'):
-                        words = words[:-1]
-                    if len(words) > 5:
-                        search_query = " ".join(words[:5])
-                    else:
-                        search_query = " ".join(words)
-                    split_bases.add(search_query)
-                        
+        # Only resolve missing split parts if an explicit search query was performed.
+        # NEVER perform global split searches when browsing channel catalog, as all parts are already in channel history.
         additional_messages = []
-        for base_query in split_bases:
-            try:
-                logger.info(f"Fetching all split parts matching base: {base_query}")
-                async for msg in self.client.search_global(query=base_query, limit=100):
-                    if self._has_media(msg):
-                        additional_messages.append(msg)
-            except Exception as e:
-                logger.warning(f"Failed to fetch additional split parts for {base_query}: {e}")
+        if query_str:
+            known_split_keys = set()
+            split_bases = {}
+            for msg in results:
+                media = msg.video or msg.document or msg.audio
+                if media:
+                    fn = getattr(media, "file_name", "") or msg.caption or ""
+                    base, part = parse_split_info(fn)
+                    if base:
+                        key = (msg.chat.id if msg.chat else 0, base.lower())
+                        known_split_keys.add(key)
+                        if base.lower() not in split_bases:
+                            search_query = re.sub(r'[^a-zA-Z0-9\s]', ' ', base)
+                            search_query = re.sub(r'\s+', ' ', search_query).strip()
+                            words = search_query.split()
+                            if words and words[-1].lower() in ('mkv', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'm4v', 'zip'):
+                                words = words[:-1]
+                            search_query = " ".join(words[:4]) if len(words) > 4 else " ".join(words)
+                            split_bases[base.lower()] = (search_query, msg.chat.id if msg.chat else None)
+                            
+            # Check if any split base only has 1 part found
+            for base_lower, (base_query, chat_id) in split_bases.items():
+                matching_parts = [
+                    m for m in results 
+                    if (parse_split_info(getattr(m.video or m.document or m.audio, "file_name", "") or m.caption or "")[0] or "").lower() == base_lower
+                ]
+                # If only 1 part found, try finding companion parts in the same chat
+                if len(matching_parts) == 1 and chat_id:
+                    try:
+                        async for msg in self.client.search_messages(chat_id=chat_id, query=base_query, limit=15):
+                            if self._has_media(msg):
+                                additional_messages.append(msg)
+                    except Exception:
+                        pass
                 
-        # Merge and deduplicate by (chat_id, message_id) to handle results from multiple channels
+        # Merge and deduplicate by (chat_id, message_id)
         deduped = {(msg.chat.id, msg.id): msg for msg in results}
         for msg in additional_messages:
-            deduped[(msg.chat.id, msg.id)] = msg
+            if msg.chat:
+                deduped[(msg.chat.id, msg.id)] = msg
             
         final_results = list(deduped.values())
         final_results.sort(key=lambda m: m.date, reverse=True)
@@ -640,6 +660,61 @@ class TelegramClientManager:
         
         self._search_cache[cache_key] = (now, final_results)
         return final_results
+
+    async def get_messages(self, message_ids: list, chat_id: int = None) -> list:
+        """Batch fetch multiple messages in a single Telegram RPC call with cache support."""
+        if not self.is_running:
+            await self.start()
+            
+        if not message_ids:
+            return []
+            
+        if chat_id is not None:
+            target_chat = chat_id
+        else:
+            channel_ids = self.get_channel_ids()
+            if channel_ids:
+                target_chat = channel_ids[0]
+            else:
+                raise ValueError("chat_id is required when TELEGRAM_CHANNEL_ID is not configured")
+                
+        now = time.time()
+        results_map = {}
+        missing_ids = []
+        
+        for m_id in message_ids:
+            cache_key = f"{target_chat}:{m_id}"
+            if cache_key in self._message_cache:
+                cached_time, cached_msg = self._message_cache[cache_key]
+                if now - cached_time < Config.CACHE_TTL:
+                    results_map[m_id] = cached_msg
+                    continue
+            missing_ids.append(m_id)
+            
+        if missing_ids:
+            try:
+                fetched = await self.client.get_messages(chat_id=target_chat, message_ids=missing_ids)
+                if not isinstance(fetched, list):
+                    fetched = [fetched] if fetched else []
+                for msg in fetched:
+                    if msg and getattr(msg, "id", None):
+                        self._message_cache[f"{target_chat}:{msg.id}"] = (now, msg)
+                        try:
+                            self._message_cache[f"{int(target_chat)}:{int(msg.id)}"] = (now, msg)
+                        except Exception:
+                            pass
+                        results_map[msg.id] = msg
+            except Exception as e:
+                logger.warning(f"Batch fetch failed for messages {missing_ids} in {target_chat}: {e}")
+                for m_id in missing_ids:
+                    try:
+                        msg = await self.get_message(m_id, chat_id=target_chat)
+                        if msg:
+                            results_map[m_id] = msg
+                    except Exception:
+                        pass
+                        
+        return [results_map[m_id] for m_id in message_ids if m_id in results_map]
 
     async def get_message(self, message_id: int, chat_id: int = None) -> Message:
         if not self.is_running:

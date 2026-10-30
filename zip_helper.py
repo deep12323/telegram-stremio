@@ -216,7 +216,14 @@ def list_zip_files_sync(reader: TelegramSeekableReader, loop: asyncio.AbstractEv
         return []
 
 
+_zip_entries_cache = {}
+
 async def list_zip_files(client, messages: Union[Message, List[Message]]) -> list:
+    msgs = messages if isinstance(messages, list) else [messages]
+    cache_key = tuple((m.chat.id if m.chat else 0, m.id) for m in msgs if getattr(m, "id", None))
+    if cache_key and cache_key in _zip_entries_cache:
+        return _zip_entries_cache[cache_key]
+
     reader = TelegramSeekableReader(client, messages)
     if reader.total_size < 30:
         return []
@@ -230,11 +237,16 @@ async def list_zip_files(client, messages: Union[Message, List[Message]]) -> lis
     local_entries = parse_zip_local_headers(first_block, total_size=reader.total_size)
     if local_entries:
         logger.info(f"Direct local ZIP header matched: {[e.filename for e in local_entries]} (STORED/uncompressed)")
+        if cache_key:
+            _zip_entries_cache[cache_key] = local_entries
         return local_entries
 
     # Fallback to standard central directory reading
     loop = asyncio.get_running_loop()
-    return await anyio.to_thread.run_sync(list_zip_files_sync, reader, loop)
+    entries = await anyio.to_thread.run_sync(list_zip_files_sync, reader, loop)
+    if cache_key and entries:
+        _zip_entries_cache[cache_key] = entries
+    return entries
 
 
 async def get_zip_entry_data_offset(reader: TelegramSeekableReader, header_offset: int) -> int:

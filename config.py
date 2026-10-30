@@ -21,9 +21,9 @@ class Config:
     TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
     LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
     try:
-        PARALLEL_CONNECTIONS = int(str(os.getenv("PARALLEL_CONNECTIONS", "2")).strip() or 2)
+        PARALLEL_CONNECTIONS = int(str(os.getenv("PARALLEL_CONNECTIONS", "4")).strip() or 4)
     except (ValueError, TypeError):
-        PARALLEL_CONNECTIONS = 2
+        PARALLEL_CONNECTIONS = 4
 
     # Enable Telegram Search catalog in Stremio (default: False)
     _raw_search = os.getenv("ENABLE_TELEGRAM_SEARCH") or os.getenv("ENABLE_SEARCH", "false")

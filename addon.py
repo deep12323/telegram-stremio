@@ -103,6 +103,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# In-memory high-speed response caches
+_catalog_cache = {}
+_stream_cache = {}
+_meta_cache = {}
+_split_metadata_cache = {}
+_subtitles_cache = {}
+
 @app.middleware("http")
 async def clean_path_middleware(request: Request, call_next):
     raw_path = request.scope.get("path", "")
@@ -668,7 +678,17 @@ async def catalog_handler(
             except ValueError:
                 pass
 
-    browse_limit = 500 if catalog_id == "telegram_channel" else 100
+    cache_key = f"{catalog_id}:{type}:{skip}:{query}"
+    now = time.time()
+    if cache_key in _catalog_cache:
+        c_time, c_data = _catalog_cache[cache_key]
+        if now - c_time < 300:
+            return JSONResponse(
+                content=c_data,
+                headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=600", "X-Cache": "HIT"}
+            )
+
+    browse_limit = max(100, min(skip + 60, 300)) if catalog_id == "telegram_channel" else 50
     try:
         messages = await tg_client_manager.search_messages(query=query, limit=browse_limit)
     except Exception as e:
@@ -809,7 +829,16 @@ async def catalog_handler(
                     "poster": get_poster_url(msg),
                 })
             
-    return {"metas": metas}
+    response_data = {
+        "metas": metas,
+        "cacheMaxAge": 300,
+        "staleRevalidate": 600
+    }
+    _catalog_cache[cache_key] = (now, response_data)
+    return JSONResponse(
+        content=response_data,
+        headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=600", "X-Cache": "MISS"}
+    )
 
 from fastapi.responses import FileResponse
 import os
@@ -886,6 +915,15 @@ async def poster_handler(chat_id: str, msg_id: int):
 async def meta_handler(type: str, meta_id: str, request: Request, api_key: str = ""):
     if not meta_id.startswith("tgfile_"):
         return {"meta": {}}
+
+    now = time.time()
+    if meta_id in _meta_cache:
+        c_time, c_data = _meta_cache[meta_id]
+        if now - c_time < 86400:
+            return JSONResponse(
+                content=c_data,
+                headers={"Cache-Control": "public, max-age=86400", "X-Cache": "HIT"}
+            )
         
     try:
         is_zip_entry = False
@@ -925,11 +963,7 @@ async def meta_handler(type: str, meta_id: str, request: Request, api_key: str =
             
         msg_id_list = [int(x) for x in msg_ids_str.split(",") if x.strip().isdigit()]
         
-        messages = []
-        for msg_id in msg_id_list:
-            msg = await tg_client_manager.get_message(msg_id, chat_id=chat_id_val)
-            if msg:
-                messages.append(msg)
+        messages = await tg_client_manager.get_messages(msg_id_list, chat_id=chat_id_val)
                 
         if not messages:
             return {"meta": {}}
@@ -986,13 +1020,25 @@ async def meta_handler(type: str, meta_id: str, request: Request, api_key: str =
                 }
             ]
             
-        return {"meta": meta}
+        response_data = {
+            "meta": meta,
+            "cacheMaxAge": 86400
+        }
+        _meta_cache[meta_id] = (now, response_data)
+        return JSONResponse(
+            content=response_data,
+            headers={"Cache-Control": "public, max-age=86400", "X-Cache": "MISS"}
+        )
     except Exception as e:
         logger.error(f"Failed to generate metadata for {meta_id}: {e}")
         return {"meta": {}}
 
 
 async def find_subtitles_for_video(video_filename: str, request: Request = None, api_key: str = "", cached_messages=None) -> list:
+    sub_cache_key = f"{video_filename}:{api_key}"
+    if sub_cache_key in _subtitles_cache:
+        return _subtitles_cache[sub_cache_key]
+
     subtitles = []
     search_results = cached_messages or []
     query_param = f"?api_key={api_key}" if api_key else ""
@@ -1001,9 +1047,9 @@ async def find_subtitles_for_video(video_filename: str, request: Request = None,
         query = get_search_query_from_filename(video_filename)
         if query:
             try:
-                search_results = await tg_client_manager.search_messages(query=query, limit=20)
+                search_results = await tg_client_manager.search_messages(query=query, limit=10)
             except Exception as e:
-                logger.error(f"Subtitle search failed for '{query}': {e}")
+                logger.debug(f"Subtitle search failed for '{query}': {e}")
                 
     seen_msg_ids = set()
     seen_sub_sigs = set()
@@ -1038,6 +1084,7 @@ async def find_subtitles_for_video(video_filename: str, request: Request = None,
                     "lang": lang
                 })
                 
+    _subtitles_cache[sub_cache_key] = subtitles
     return subtitles
 
 @app.get("/stream/{type}/{stream_id}.json")
@@ -1053,6 +1100,16 @@ async def stream_handler(
         actual_key = api_key or request.query_params.get("api_key", "")
         if actual_key != Config.API_KEY:
             raise HTTPException(status_code=403, detail="Unauthorized")
+
+    cache_key = f"{type}:{stream_id}"
+    now = time.time()
+    if cache_key in _stream_cache:
+        c_time, c_data = _stream_cache[cache_key]
+        if now - c_time < 1800:
+            return JSONResponse(
+                content=c_data,
+                headers={"Cache-Control": "public, max-age=1800, stale-while-revalidate=600", "X-Cache": "HIT"}
+            )
         
     streams = []
     query_param = f"?api_key={api_key}" if api_key else ""
@@ -1088,11 +1145,7 @@ async def stream_handler(
             msg_id_list = [int(x) for x in msg_ids.split(",") if x.strip().isdigit()]
             
             try:
-                messages = []
-                for msg_id in msg_id_list:
-                    msg = await tg_client_manager.get_message(msg_id, chat_id=chat_id_val)
-                    if msg:
-                        messages.append(msg)
+                messages = await tg_client_manager.get_messages(msg_id_list, chat_id=chat_id_val)
                         
                 if messages:
                     zip_entries = await list_zip_files(tg_client_manager.client, messages)
@@ -1129,20 +1182,17 @@ async def stream_handler(
                     except ValueError:
                         chat_id_val = chat_id
                     
-                    first_msg = await tg_client_manager.get_message(msg_id_list[0], chat_id=chat_id_val)
+                    split_msgs = await tg_client_manager.get_messages(msg_id_list, chat_id=chat_id_val)
+                    if not split_msgs:
+                        raise ValueError(f"No messages resolved for {msg_ids}")
+                    first_msg = split_msgs[0]
                     media = first_msg.video or first_msg.document or first_msg.audio
                     first_fn = getattr(media, "file_name", "video.mp4") or "video.mp4"
                     base_name, _ = parse_split_info(first_fn)
                     if not base_name:
                         base_name = first_fn
                         
-                    total_size = 0
-                    for m_id in msg_id_list:
-                        m = await tg_client_manager.get_message(m_id, chat_id=chat_id_val)
-                        if m:
-                            med = m.video or m.document or m.audio
-                            if med:
-                                total_size += med.file_size
+                    total_size = sum((m.video or m.document or m.audio).file_size for m in split_msgs if (m.video or m.document or m.audio))
                                 
                     stream_url = f"{get_addon_url(request)}/stream/split/{chat_id}/{msg_ids}/{urllib.parse.quote(base_name)}{query_param}"
                     first_caption = getattr(first_msg, "caption", "") or ""
@@ -1215,13 +1265,13 @@ async def stream_handler(
             if movie_name:
                 matcher = TelegramSearchMatcher()
                 if type == "series" and season is not None and episode is not None:
-                    queries = matcher.build_series_queries(movie_name, season, episode)
+                    queries = matcher.build_series_queries(movie_name, season, episode)[:4]
                 else:
-                    queries = matcher.build_movie_queries(movie_name, year)
+                    queries = matcher.build_movie_queries(movie_name, year)[:3]
                 
-                logger.info(f"Resolved IMDb {imdb_id} to '{movie_name}'. Searching Telegram with {len(queries)} queries...")
+                logger.info(f"Resolved IMDb {imdb_id} to '{movie_name}'. Searching Telegram with {len(queries)} focused queries...")
                 
-                search_tasks = [tg_client_manager.search_messages(query=q, limit=500) for q in queries]
+                search_tasks = [tg_client_manager.search_messages(query=q, limit=40) for q in queries]
                 search_results_lists = await asyncio.gather(*search_tasks, return_exceptions=True)
                 
                 all_messages = {}
@@ -1451,7 +1501,16 @@ async def stream_handler(
         except Exception as e:
             logger.error(f"Cinemeta search/resolve failed: {e}")
 
-    return {"streams": streams}
+    response_data = {
+        "streams": streams,
+        "cacheMaxAge": 1800,
+        "staleRevalidate": 600
+    }
+    _stream_cache[cache_key] = (now, response_data)
+    return JSONResponse(
+        content=response_data,
+        headers={"Cache-Control": "public, max-age=1800, stale-while-revalidate=600", "X-Cache": "MISS"}
+    )
 
 @app.get("/subtitles/{type}/{id}.json")
 @app.get("/subtitles/{type}/{id}/{extra}.json")
@@ -1771,34 +1830,43 @@ async def tg_split_stream_proxy(
             tg_client_manager.send_play_log(filename, chat_id_val, msg_id_list[0])
         )
         
-    chunks_info = []
-    total_size = 0
+    split_cache_key = (str(chat_id_val), tuple(msg_id_list))
+    now = time.time()
     
-    for msg_id in msg_id_list:
+    if split_cache_key in _split_metadata_cache and now - _split_metadata_cache[split_cache_key]["time"] < 3600:
+        cached_info = _split_metadata_cache[split_cache_key]
+        chunks_info = cached_info["chunks_info"]
+        total_size = cached_info["total_size"]
+    else:
+        chunks_info = []
+        total_size = 0
         try:
-            # Fetch fresh message for valid file_reference
-            try:
-                msg = await tg_client_manager.client.get_messages(chat_id=chat_id_val, message_ids=msg_id)
-            except Exception:
-                msg = await tg_client_manager.get_message(msg_id, chat_id=chat_id_val)
-            if not msg:
-                raise HTTPException(status_code=404, detail=f"Message {msg_id} not found")
-            media = msg.video or msg.document or msg.audio
-            if not media:
-                raise HTTPException(status_code=400, detail=f"No media in message {msg_id}")
+            fetched_msgs = await tg_client_manager.get_messages(msg_id_list, chat_id=chat_id_val)
+            for msg in fetched_msgs:
+                media = msg.video or msg.document or msg.audio
+                if not media:
+                    continue
+                chunks_info.append({
+                    "msg": msg,
+                    "media": media,
+                    "size": media.file_size,
+                    "start_byte": total_size,
+                    "end_byte": total_size + media.file_size - 1
+                })
+                total_size += media.file_size
                 
-            chunks_info.append({
-                "msg": msg,
-                "media": media,
-                "size": media.file_size,
-                "start_byte": total_size,
-                "end_byte": total_size + media.file_size - 1
-            })
-            total_size += media.file_size
+            if not chunks_info:
+                raise HTTPException(status_code=404, detail="No playable media found in split parts")
+                
+            _split_metadata_cache[split_cache_key] = {
+                "time": now,
+                "chunks_info": chunks_info,
+                "total_size": total_size
+            }
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error fetching metadata for msg {msg_id}: {e}")
+            logger.error(f"Error fetching metadata for split parts {message_ids}: {e}")
             raise HTTPException(status_code=500, detail="Failed resolving split file metadata")
             
     range_header = request.headers.get("Range")
