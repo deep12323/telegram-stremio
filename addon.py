@@ -1112,10 +1112,10 @@ async def stream_handler(
     now = time.time()
     if cache_key in _stream_cache:
         c_time, c_data = _stream_cache[cache_key]
-        if now - c_time < 1800:
+        if now - c_time < 300:
             return JSONResponse(
                 content=c_data,
-                headers={"Cache-Control": "public, max-age=1800, stale-while-revalidate=600", "X-Cache": "HIT"}
+                headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=60", "X-Cache": "HIT"}
             )
         
     streams = []
@@ -1516,13 +1516,13 @@ async def stream_handler(
 
     response_data = {
         "streams": streams,
-        "cacheMaxAge": 1800,
-        "staleRevalidate": 600
+        "cacheMaxAge": 300,
+        "staleRevalidate": 60
     }
     _stream_cache[cache_key] = (now, response_data)
     return JSONResponse(
         content=response_data,
-        headers={"Cache-Control": "public, max-age=1800, stale-while-revalidate=600", "X-Cache": "MISS"}
+        headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=60", "X-Cache": "MISS"}
     )
 
 @app.get("/subtitles/{type}/{id}.json")
