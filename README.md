@@ -175,6 +175,7 @@ Configure these settings in your deployment dashboard or local `.env` file:
 | `TIMEZONE` | No | Timezone for logs (e.g., `Asia/Kolkata`, `UTC+05:30`). Defaults to `UTC`. |
 | `CACHE_TTL` | No | Cache duration in seconds for searches (default: `1800` [30 mins]). |
 | `ENABLE_TELEGRAM_SEARCH` | No | Enable Telegram Search catalog in Stremio's search bar (default: `false`). Turn on by setting to `true` via variable or secret (also accepts `ENABLE_SEARCH`). |
+| `HIDE_SPLIT_STREAMS` | No | Hide split video files (.part001, .part002) only when loading stream links for movies and series (default: `false`). Set to `true` under **Variables** or **Secrets** to hide split parts from movie/series streams. (Split files remain fully visible and browsable in catalogue and search). |
 
 ---
 
@@ -329,6 +330,7 @@ The addon can be deployed on Hugging Face Spaces in less than 5 minutes. You can
      - 'API_KEY' (a password of your choice to protect your addon link)
      - 'ADDON_URL': Set this to 'https://<your-hf-username>-<your-space-name>.hf.space' (you can find this URL by clicking "Embed this Space" in the top-right of your Space page).
      - 'ENABLE_TELEGRAM_SEARCH': (Optional) Add under **Variables** or **Secrets** with value `true` if you want Stremio's search bar to search Telegram. Defaults to `false` (disabled) to prevent Telegram FloodWait rate limits.
+     - 'HIDE_SPLIT_STREAMS': (Optional) Add under **Variables** or **Secrets** with value `true` if you want to hide multi-part split video files when loading stream links for movies and series (while keeping them visible in catalogue and search). Defaults to `false`.
      - 'AUTO_UPDATE': (Optional) Set to 'true' if you want the Space to automatically download the latest version of the code from GitHub on startup. Set to 'false' or leave it unset to use the static uploaded files.
      - 'GITHUB_REPO_URL': (Optional) If you set 'AUTO_UPDATE' to 'true' and want to pull from your own custom GitHub fork, enter your fork URL here (e.g., 'https://github.com/yourusername/stremio-telegram-debrid.git').
 6. **How to Update in the Future**:
