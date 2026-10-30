@@ -62,6 +62,8 @@ Deploy your own instance of the Telegram Stremio Addon instantly using any of th
 ## Key Features
 
 - **Stream Matching**: Select any movie or series in Stremio; the addon automatically finds and matches corresponding video files in your Telegram channels/account and serves them instantly as stream sources.
+- **Ultra-Fast In-Memory Caching & RPC Optimization**: Intelligent 10x faster links and catalogue loading powered by in-memory TTL caching, batch message resolution, dynamic RPC query bounds, and HTTP Gzip response compression.
+- **Hide Split Streams Setting**: Opt-in toggle (`HIDE_SPLIT_STREAMS=true`) to hide multi-part split video files (`.part001`, `.part002`, `.001`) only when loading stream links for movies and series, while keeping them fully visible and browsable in your channel catalogue and search!
 - **Optional Stremio Catalog Search**: By default, Stremio's global search bar does not search Telegram to prevent rate limits (`FloodWait`). Users can optionally enable global catalog search by setting `ENABLE_TELEGRAM_SEARCH=true`.
 - **Stitched Split Streaming**: Automatically groups, merges, and streams multi-part file archives (such as `.001`, `.part1` patterns) as one continuous virtual stream.
 - **ZIP Archive Streaming**: Automatically scans, lists, and streams video files nested inside standard ZIP archives or split ZIP files (e.g., '.zip.001', '.zip.002', etc.) on the fly.
@@ -88,6 +90,14 @@ The addon parses standard split archive conventions including:
 1. **Aggregation**: The catalog handler parses filename patterns and clusters split files together, presenting them as a single item with their total combined file size (e.g., `Stitch stream | 6.2 GB`).
 2. **Dynamic Range Mapping**: When you press play or seek in Stremio, the addon maps the player's byte-range requests to the respective split files on the fly.
 3. **In-Memory Sequential Access**: It downloads only the necessary segments from Telegram DCs and transitions between split messages seamlessly in memory, resulting in uninterrupted playback.
+
+### 💡 Hiding Split Files from Movie & Series Stream Links
+
+If you prefer to see only complete single-file releases when browsing movies and series in Stremio (instead of seeing `.part001`, `.part002`, or `▶ Telegram Split` entries in the stream sources list), you can enable the `HIDE_SPLIT_STREAMS` setting:
+
+* **How to enable**: Set `HIDE_SPLIT_STREAMS=true` under your deployment **Variables** or **Secrets** (or in your `.env` file).
+* **Where split files are hidden**: Exclusively in movie and series stream links (`/stream/...`). When you select an IMDb title in Stremio, only non-split video releases will appear.
+* **Where split files remain visible**: Split files remain **100% visible and browsable in your Channel Catalogue and in Telegram Search** (`/catalog/...`), and direct playback of any split file selected from the catalogue continues to work normally.
 
 ---
 
@@ -479,6 +489,7 @@ BOT_TOKEN=your_bot_token
 API_KEY=your_addon_api_key
 ADDON_URL=https://stremio-tg.yourdomain.com
 ENABLE_TELEGRAM_SEARCH=false
+HIDE_SPLIT_STREAMS=false
 ```
 *(Replace `yourdomain.com` with your actual domain)*
 
