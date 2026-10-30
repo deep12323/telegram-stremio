@@ -30,6 +30,16 @@ class Config:
     ENABLE_TELEGRAM_SEARCH = str(_raw_search).strip().lower() in ("true", "1", "yes", "on")
     ENABLE_SEARCH = ENABLE_TELEGRAM_SEARCH
 
+    # Hide split video files when loading stream links for movies and series (default: False)
+    _raw_hide_split = (
+        os.getenv("HIDE_SPLIT_STREAMS")
+        or os.getenv("HIDE_SPLIT_FILES")
+        or os.getenv("HIDE_SPLIT")
+        or os.getenv("HIDE_SPLIT_IN_STREAMS", "false")
+    )
+    HIDE_SPLIT_STREAMS = str(_raw_hide_split).strip().lower() in ("true", "1", "yes", "on")
+    HIDE_SPLIT_FILES = HIDE_SPLIT_STREAMS
+
     @classmethod
     def validate(cls):
         missing = []

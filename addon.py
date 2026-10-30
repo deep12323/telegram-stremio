@@ -1101,7 +1101,13 @@ async def stream_handler(
         if actual_key != Config.API_KEY:
             raise HTTPException(status_code=403, detail="Unauthorized")
 
-    cache_key = f"{type}:{stream_id}"
+    hide_split_param = request.query_params.get("hide_split")
+    if hide_split_param is not None:
+        hide_split_streams = hide_split_param.strip().lower() in ("true", "1", "yes", "on")
+    else:
+        hide_split_streams = getattr(Config, "HIDE_SPLIT_STREAMS", False)
+
+    cache_key = f"{type}:{stream_id}:{hide_split_streams}"
     now = time.time()
     if cache_key in _stream_cache:
         c_time, c_data = _stream_cache[cache_key]
@@ -1350,6 +1356,9 @@ async def stream_handler(
                                 logger.error(f"Error checking split ZIP for IMDB: {e}")
                                 
                         if not is_zip:
+                            if hide_split_streams:
+                                logger.info(f"Hiding split video stream '{base_name}' for {imdb_id} (HIDE_SPLIT_STREAMS enabled)")
+                                continue
                             if not is_video_file(base_name):
                                 continue
                             first_media = first_msg.video or first_msg.document or first_msg.audio
@@ -1432,6 +1441,9 @@ async def stream_handler(
                                 
                         if not is_zip:
                             if not is_video_file(file_name):
+                                continue
+                            if hide_split_streams and parse_split_info(file_name)[0] is not None:
+                                logger.info(f"Hiding individual split part stream '{file_name}' for {imdb_id} (HIDE_SPLIT_STREAMS enabled)")
                                 continue
                             stream_url = f"{get_addon_url(request)}/stream/file/{chat_id}/{msg.id}/{urllib.parse.quote(file_name)}{query_param}"
                             subtitles = await find_subtitles_for_video(file_name, request=request, api_key=api_key, cached_messages=tg_results_flat)
