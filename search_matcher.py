@@ -231,15 +231,12 @@ class TelegramSearchMatcher:
             ])
             
         queries.extend([
-            f"{eng_base} s{s}e{e}",
             f"{eng_base} s{s2}e{e2}",
-            f"{eng_base} s{s} e{e}",
-            f"{eng_base} s{s2} e{e2}",
+            f"{eng_base} s{s}e{e}",
             f"{eng_base} {s}x{e2}",
-            f"{eng_base} {s}x{e}",
+            f"{eng_base} s{s2} e{e2}",
             f"{eng_base} season {s} episode {e}",
             f"{eng_base} episode {e}",
-            f"{eng_base} season {s}",
             f"{eng_base}",
         ])
         
