@@ -52,152 +52,37 @@ utils.get_peer_type = _safe_get_peer_type
 pyrogram.utils.get_peer_type = _safe_get_peer_type
 
 
-class MediaSessionPool:
-    """Pool of parallel MTProto media sessions for a specific DC.
-    
-    Provides non-blocking dynamic leasing via asyncio.Queue so seeking
-    and concurrent requests never block or deadlock each other.
-    """
-    def __init__(self, client: Client, dc_id: int, pool_size: int = 4):
-        self.client = client
-        self.dc_id = dc_id
-        self.pool_size = pool_size
-        self._queue: asyncio.Queue[Session] = asyncio.Queue()
-        self._all_sessions: list[Session] = []
-        self._lock = asyncio.Lock()
-        self._initialized = False
+class LockedMediaSession:
+    def __init__(self, session: Session):
+        self.session = session
+        self.lock = asyncio.Lock()
 
-    async def ensure_initialized(self):
-        if self._initialized and len(self._all_sessions) >= self.pool_size:
-            return
-        async with self._lock:
-            if self._initialized and len(self._all_sessions) >= self.pool_size:
-                return
-
-            auth_key = (
-                await Auth(self.client, self.dc_id, await self.client.storage.test_mode()).create()
-                if self.dc_id != await self.client.storage.dc_id()
-                else await self.client.storage.auth_key()
-            )
-            exported_auth = None
-            if self.dc_id != await self.client.storage.dc_id():
-                exported_auth = await self.client.invoke(
-                    raw.functions.auth.ExportAuthorization(dc_id=self.dc_id)
-                )
-
-            while len(self._all_sessions) < self.pool_size:
-                idx = len(self._all_sessions) + 1
-                logger.info(f"Creating parallel media session {idx}/{self.pool_size} for DC{self.dc_id}...")
-                session = Session(
-                    self.client,
-                    self.dc_id,
-                    auth_key,
-                    await self.client.storage.test_mode(),
-                    is_media=True
-                )
-                await session.start()
-
-                if exported_auth is not None:
-                    await session.invoke(
-                        raw.functions.auth.ImportAuthorization(
-                            id=exported_auth.id,
-                            bytes=exported_auth.bytes
-                        )
+    async def invoke(self, query, description: str = "media chunk"):
+        async with self.lock:
+            retries = 3
+            while retries > 0:
+                try:
+                    return await self.session.invoke(query, sleep_threshold=0)
+                except FloodWait as e:
+                    retries -= 1
+                    logger.warning(
+                        f"🚨 [FLOOD WAIT] Telegram rate limit active on DC{self.session.dc_id}! "
+                        f"Pausing for {e.value} seconds ({description}). Video playback may buffer/wait."
                     )
-                self._all_sessions.append(session)
-                self._queue.put_nowait(session)
-            self._initialized = True
-
-    async def acquire(self) -> Session:
-        await self.ensure_initialized()
-        return await self._queue.get()
-
-    def release(self, session: Session):
-        self._queue.put_nowait(session)
-
-    async def restart_session(self, session: Session):
-        try:
-            await session.stop()
-        except Exception:
-            pass
-        try:
-            await session.start()
-            if self.dc_id != await self.client.storage.dc_id():
-                exported_auth = await self.client.invoke(
-                    raw.functions.auth.ExportAuthorization(dc_id=self.dc_id)
-                )
-                await session.invoke(
-                    raw.functions.auth.ImportAuthorization(
-                        id=exported_auth.id,
-                        bytes=exported_auth.bytes
-                    )
-                )
-        except Exception as e:
-            logger.warning(f"Error restarting media session for DC{self.dc_id}: {e}")
+                    await asyncio.sleep(e.value)
+                    logger.info(f"✅ [FLOOD WAIT] Resumed download on DC{self.session.dc_id} after {e.value}s pause.")
+                except Exception:
+                    raise
+            return await self.session.invoke(query, sleep_threshold=30)
 
     async def stop(self):
-        async with self._lock:
-            for s in self._all_sessions:
-                try:
-                    await s.stop()
-                except Exception:
-                    pass
-            self._all_sessions.clear()
-            while not self._queue.empty():
-                try:
-                    self._queue.get_nowait()
-                except Exception:
-                    break
-            self._initialized = False
-
-
-async def fetch_single_chunk(
-    pool: MediaSessionPool,
-    location: raw.base.InputFileLocation,
-    off_bytes: int,
-    chunk_size: int
-):
-    offset_mb = off_bytes / (1024 * 1024)
-    query = raw.functions.upload.GetFile(
-        location=location,
-        offset=off_bytes,
-        limit=chunk_size
-    )
-    retries = 3
-    for attempt in range(retries):
-        session = None
         try:
-            session = await pool.acquire()
-            r = await session.invoke(query, sleep_threshold=0)
-            return r
-        except FloodWait as e:
-            logger.warning(
-                f"🚨 [FLOOD WAIT] Telegram rate limit active on DC{pool.dc_id}! "
-                f"Pausing for {e.value} seconds (offset {offset_mb:.1f} MB)..."
-            )
-            await asyncio.sleep(e.value)
-        except (asyncio.CancelledError, pyrogram.StopTransmission):
-            raise
-        except (OSError, TimeoutError) as e:
-            if session is not None:
-                await pool.restart_session(session)
-            if attempt == retries - 1:
-                logger.error(f"Network error fetching chunk at {offset_mb:.1f} MB: {e}")
-                raise
-            logger.warning(f"Network error at {offset_mb:.1f} MB: {e}. Retrying ({attempt+1}/{retries})...")
-            await asyncio.sleep(0.3)
-        except Exception as e:
-            if attempt == retries - 1:
-                logger.error(f"Error fetching chunk at {offset_mb:.1f} MB: {e}")
-                raise
-            logger.warning(f"Error fetching chunk at {offset_mb:.1f} MB: {e}. Retrying ({attempt+1}/{retries})...")
-            await asyncio.sleep(0.3)
-        finally:
-            if session is not None:
-                pool.release(session)
+            await self.session.stop()
+        except Exception:
+            pass
 
 
-# Monkey-patch Client.get_file with pipelined parallel downloading and instant-seek prefetching
+# Monkey-patch Client.get_file to reuse media sessions and avoid connection overhead
 async def _patched_get_file(
     self: Client,
     file_id: FileId,
@@ -247,80 +132,103 @@ async def _patched_get_file(
                 thumb_size=file_id.thumbnail_size
             )
 
+        current = 0
+        total = abs(limit) or (1 << 31) - 1
         chunk_size = 1024 * 1024  # 1 MB chunk size for maximum throughput
-        start_chunk = abs(offset)
+        offset_bytes = abs(offset) * chunk_size
 
-        if limit:
-            total_chunks = abs(limit)
-        elif file_size > 0:
-            total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size - start_chunk)
-        else:
-            total_chunks = (1 << 31) - 1
-
-        end_chunk = start_chunk + total_chunks
         dc_id = file_id.dc_id
 
-        # Initialize custom session pool dictionary if not present
-        if not hasattr(self, "_custom_media_pools"):
-            self._custom_media_pools = {}
-            self._custom_pools_lock = asyncio.Lock()
-
-        pool_size = max(2, min(getattr(Config, "PARALLEL_CONNECTIONS", 4), 16))
-        buffer_capacity = max(pool_size * 3, getattr(Config, "BUFFER_CHUNKS", 16))
-
-        async with self._custom_pools_lock:
-            if dc_id not in self._custom_media_pools:
-                self._custom_media_pools[dc_id] = MediaSessionPool(self, dc_id, pool_size=pool_size)
-            pool = self._custom_media_pools[dc_id]
-
-        in_flight: dict[int, asyncio.Task] = {}
-        next_fetch_idx = start_chunk
-        next_yield_idx = start_chunk
-        current = 0
-        total = total_chunks
-
-        def schedule_downloads():
-            nonlocal next_fetch_idx
-            while next_fetch_idx < end_chunk and len(in_flight) < buffer_capacity:
-                idx = next_fetch_idx
-                off_bytes = idx * chunk_size
-                in_flight[idx] = asyncio.create_task(
-                    fetch_single_chunk(pool, location, off_bytes, chunk_size)
+        # Initialize custom sessions dictionary if not present
+        if not hasattr(self, "_custom_media_sessions"):
+            self._custom_media_sessions = {}
+            self._custom_sessions_lock = asyncio.Lock()
+            
+        pool_size = max(1, min(getattr(Config, "PARALLEL_CONNECTIONS", 2), 16))
+        prefetch_window = max(1, pool_size - 1)
+        
+        async with self._custom_sessions_lock:
+            if dc_id not in self._custom_media_sessions:
+                self._custom_media_sessions[dc_id] = []
+                
+            sessions = self._custom_media_sessions[dc_id]
+            while len(sessions) < pool_size:
+                logger.info(f"Creating parallel media session {len(sessions) + 1}/{pool_size} for DC{dc_id}...")
+                session = Session(
+                    self, dc_id,
+                    await Auth(self, dc_id, await self.storage.test_mode()).create()
+                    if dc_id != await self.storage.dc_id()
+                    else await self.storage.auth_key(),
+                    await self.storage.test_mode(),
+                    is_media=True
                 )
-                next_fetch_idx += 1
+                await session.start()
 
+                if dc_id != await self.storage.dc_id():
+                    exported_auth = await self.invoke(
+                        raw.functions.auth.ExportAuthorization(
+                            dc_id=dc_id
+                        )
+                    )
+
+                    await session.invoke(
+                        raw.functions.auth.ImportAuthorization(
+                            id=exported_auth.id,
+                            bytes=exported_auth.bytes
+                        )
+                    )
+                sessions.append(LockedMediaSession(session))
+
+        prefetch_tasks = {}
         try:
-            # Immediately start fetching chunks in parallel across all sessions
-            schedule_downloads()
+            # Helper to fetch a chunk asynchronously using a specific session
+            async def fetch_chunk(off_bytes, sess):
+                offset_mb = off_bytes / (1024 * 1024)
+                return await sess.invoke(
+                    raw.functions.upload.GetFile(
+                        location=location,
+                        offset=off_bytes,
+                        limit=chunk_size
+                    ),
+                    description=f"offset {offset_mb:.1f} MB"
+                )
 
-            while next_yield_idx < end_chunk:
-                schedule_downloads()
+            # Request first chunk using session 0
+            r = await fetch_chunk(offset_bytes, sessions[0])
 
-                if next_yield_idx not in in_flight:
-                    break
+            if isinstance(r, raw.types.upload.File):
+                # Start pre-fetching the next chunks in parallel using different sessions
+                for idx in range(1, prefetch_window + 1):
+                    chunk_offset = offset_bytes + idx * chunk_size
+                    if idx >= total:
+                        break
+                    sess = sessions[idx % pool_size]
+                    prefetch_tasks[chunk_offset] = asyncio.create_task(fetch_chunk(chunk_offset, sess))
 
-                task = in_flight.pop(next_yield_idx)
-                try:
-                    r = await task
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(f"Error retrieving chunk {next_yield_idx}: {e}")
-                    raise
-
-                if isinstance(r, raw.types.upload.File):
+                while True:
                     chunk = r.bytes
                     yield chunk
 
                     current += 1
+                    yielded_offset = offset_bytes
+                    offset_bytes += chunk_size
+
+                    # Trigger next pre-fetch ahead in pipeline
+                    next_prefetch_offset = yielded_offset + (prefetch_window + 1) * chunk_size
+                    if current + prefetch_window < total:
+                        sess = sessions[(current + prefetch_window) % pool_size]
+                        prefetch_tasks[next_prefetch_offset] = asyncio.create_task(fetch_chunk(next_prefetch_offset, sess))
+
                     if progress:
-                        offset_bytes = (next_yield_idx + 1) * chunk_size
                         func = functools.partial(
                             progress,
-                            min(offset_bytes, file_size) if file_size != 0 else offset_bytes,
+                            min(offset_bytes, file_size)
+                            if file_size != 0
+                            else offset_bytes,
                             file_size,
                             *progress_args
                         )
+
                         if inspect.iscoroutinefunction(progress):
                             await func()
                         else:
@@ -329,80 +237,116 @@ async def _patched_get_file(
                     if len(chunk) < chunk_size or current >= total:
                         break
 
-                    next_yield_idx += 1
-
-                elif isinstance(r, raw.types.upload.FileCdnRedirect):
-                    cdn_session = Session(
-                        self, r.dc_id, await Auth(self, r.dc_id, await self.storage.test_mode()).create(),
-                        await self.storage.test_mode(), is_media=True, is_cdn=True
-                    )
-                    try:
-                        await cdn_session.start()
-                        cdn_offset_bytes = next_yield_idx * chunk_size
-                        while True:
-                            r2 = await cdn_session.invoke(
-                                raw.functions.upload.GetCdnFile(
-                                    file_token=r.file_token,
-                                    offset=cdn_offset_bytes,
-                                    limit=chunk_size
-                                )
-                            )
-                            if isinstance(r2, raw.types.upload.CdnFileReuploadNeeded):
-                                session0 = await pool.acquire()
-                                try:
-                                    await session0.invoke(
-                                        raw.functions.upload.ReuploadCdnFile(
-                                            file_token=r.file_token,
-                                            request_token=r2.request_token
-                                        )
-                                    )
-                                except VolumeLocNotFound:
-                                    break
-                                else:
-                                    continue
-                                finally:
-                                    pool.release(session0)
-
-                            chunk = r2.bytes
-                            decrypted_chunk = aes.ctr256_decrypt(
-                                chunk,
-                                r.encryption_key,
-                                bytearray(
-                                    r.encryption_iv[:-4]
-                                    + (cdn_offset_bytes // 16).to_bytes(4, "big")
-                                )
-                            )
-                            session0 = await pool.acquire()
-                            try:
-                                hashes = await session0.invoke(
-                                    raw.functions.upload.GetCdnFileHashes(
-                                        file_token=r.file_token,
-                                        offset=cdn_offset_bytes
-                                    )
-                                )
-                            finally:
-                                pool.release(session0)
-
-                            for i, h in enumerate(hashes):
-                                cdn_chunk = decrypted_chunk[h.limit * i: h.limit * (i + 1)]
-                                CDNFileHashMismatch.check(
-                                    h.hash == sha256(cdn_chunk).digest(),
-                                    "h.hash == sha256(cdn_chunk).digest()"
-                                )
-
-                            yield decrypted_chunk
-                            current += 1
-                            cdn_offset_bytes += chunk_size
-
-                            if len(chunk) < chunk_size or current >= total:
+                    # Retrieve the next chunk from the prefetch dict
+                    next_chunk_offset = yielded_offset + chunk_size
+                    if next_chunk_offset in prefetch_tasks:
+                        try:
+                            r = await prefetch_tasks[next_chunk_offset]
+                            del prefetch_tasks[next_chunk_offset]
+                            if not isinstance(r, raw.types.upload.File):
                                 break
-                    finally:
-                        await cdn_session.stop()
-                    break
-                else:
-                    break
+                        except asyncio.CancelledError:
+                            break
+                        except Exception as pre_err:
+                            logger.error(f"Error in parallel prefetch: {pre_err}")
+                            raise pre_err
+                    else:
+                        break
+
+            elif isinstance(r, raw.types.upload.FileCdnRedirect):
+                cdn_session = Session(
+                    self, r.dc_id, await Auth(self, r.dc_id, await self.storage.test_mode()).create(),
+                    await self.storage.test_mode(), is_media=True, is_cdn=True
+                )
+
+                try:
+                    await cdn_session.start()
+
+                    while True:
+                        r2 = await cdn_session.invoke(
+                            raw.functions.upload.GetCdnFile(
+                                file_token=r.file_token,
+                                offset=offset_bytes,
+                                limit=chunk_size
+                            )
+                        )
+
+                        if isinstance(r2, raw.types.upload.CdnFileReuploadNeeded):
+                            try:
+                                await sessions[0].invoke(
+                                    raw.functions.upload.ReuploadCdnFile(
+                                        file_token=r.file_token,
+                                        request_token=r2.request_token
+                                    )
+                                )
+                            except VolumeLocNotFound:
+                                break
+                            else:
+                                continue
+
+                        chunk = r2.bytes
+
+                        decrypted_chunk = aes.ctr256_decrypt(
+                            chunk,
+                            r.encryption_key,
+                            bytearray(
+                                r.encryption_iv[:-4]
+                                + (offset_bytes // 16).to_bytes(4, "big")
+                            )
+                        )
+
+                        hashes = await sessions[0].invoke(
+                            raw.functions.upload.GetCdnFileHashes(
+                                file_token=r.file_token,
+                                offset=offset_bytes
+                            )
+                        )
+
+                        for i, h in enumerate(hashes):
+                            cdn_chunk = decrypted_chunk[h.limit * i: h.limit * (i + 1)]
+                            CDNFileHashMismatch.check(
+                                h.hash == sha256(cdn_chunk).digest(),
+                                "h.hash == sha256(cdn_chunk).digest()"
+                            )
+
+                        yield decrypted_chunk
+
+                        current += 1
+                        offset_bytes += chunk_size
+
+                        if progress:
+                            func = functools.partial(
+                                progress,
+                                min(offset_bytes, file_size) if file_size != 0 else offset_bytes,
+                                file_size,
+                                *progress_args
+                            )
+
+                            if inspect.iscoroutinefunction(progress):
+                                await func()
+                            else:
+                                await self.loop.run_in_executor(self.executor, func)
+
+                        if len(chunk) < chunk_size or current >= total:
+                            break
+                finally:
+                    await cdn_session.stop()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if not isinstance(e, (pyrogram.StopTransmission, asyncio.CancelledError)):
+                logger.warning(f"Error in media sessions for DC{dc_id}: {e}")
+                async with self._custom_sessions_lock:
+                    if dc_id in self._custom_media_sessions:
+                        for s in self._custom_media_sessions[dc_id]:
+                            try:
+                                await s.stop()
+                            except Exception:
+                                pass
+                        self._custom_media_sessions.pop(dc_id, None)
+            raise e
         finally:
-            for task in in_flight.values():
+            for task in prefetch_tasks.values():
                 if not task.done():
                     task.cancel()
 
@@ -534,16 +478,6 @@ class TelegramClientManager:
     async def stop(self):
         if self.is_running and self.client:
             logger.info("Stopping Pyrogram client...")
-            try:
-                if hasattr(self.client, "_custom_media_pools"):
-                    for pool in list(self.client._custom_media_pools.values()):
-                        try:
-                            await pool.stop()
-                        except Exception:
-                            pass
-                    self.client._custom_media_pools.clear()
-            except Exception:
-                pass
             try:
                 await asyncio.wait_for(self.client.stop(), timeout=3.0)
             except asyncio.TimeoutError:

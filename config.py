@@ -25,11 +25,6 @@ class Config:
     except (ValueError, TypeError):
         PARALLEL_CONNECTIONS = 4
 
-    try:
-        BUFFER_CHUNKS = int(str(os.getenv("BUFFER_CHUNKS", "16")).strip() or 16)
-    except (ValueError, TypeError):
-        BUFFER_CHUNKS = 16
-
     # Enable Telegram Search catalog in Stremio (default: False)
     _raw_search = os.getenv("ENABLE_TELEGRAM_SEARCH") or os.getenv("ENABLE_SEARCH", "false")
     ENABLE_TELEGRAM_SEARCH = str(_raw_search).strip().lower() in ("true", "1", "yes", "on")
