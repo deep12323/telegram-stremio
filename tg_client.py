@@ -144,7 +144,7 @@ async def _patched_get_file(
             self._custom_media_sessions = {}
             self._custom_sessions_lock = asyncio.Lock()
             
-        pool_size = max(1, min(getattr(Config, "PARALLEL_CONNECTIONS", 2), 16))
+        pool_size = max(1, min(getattr(Config, "PARALLEL_CONNECTIONS", 5), 16))
         prefetch_window = max(1, pool_size - 1)
         
         async with self._custom_sessions_lock:
@@ -193,18 +193,18 @@ async def _patched_get_file(
                     description=f"offset {offset_mb:.1f} MB"
                 )
 
-            # Request first chunk using session 0
-            r = await fetch_chunk(offset_bytes, sessions[0])
+            # Launch first chunk and pre-fetching of subsequent chunks simultaneously in parallel
+            first_chunk_task = asyncio.create_task(fetch_chunk(offset_bytes, sessions[0]))
+            for idx in range(1, prefetch_window + 1):
+                chunk_offset = offset_bytes + idx * chunk_size
+                if idx >= total:
+                    break
+                sess = sessions[idx % pool_size]
+                prefetch_tasks[chunk_offset] = asyncio.create_task(fetch_chunk(chunk_offset, sess))
+
+            r = await first_chunk_task
 
             if isinstance(r, raw.types.upload.File):
-                # Start pre-fetching the next chunks in parallel using different sessions
-                for idx in range(1, prefetch_window + 1):
-                    chunk_offset = offset_bytes + idx * chunk_size
-                    if idx >= total:
-                        break
-                    sess = sessions[idx % pool_size]
-                    prefetch_tasks[chunk_offset] = asyncio.create_task(fetch_chunk(chunk_offset, sess))
-
                 while True:
                     chunk = r.bytes
                     yield chunk
