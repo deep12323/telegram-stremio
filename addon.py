@@ -1732,8 +1732,10 @@ async def tg_stream_proxy(
         "Content-Length": str(content_length),
         "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
     }
     # Content-Range MUST only be sent with 206 Partial Content, not 200.
     # Sending it on 200 confuses video players and causes playback failures.
@@ -1758,7 +1760,13 @@ async def tg_stream_proxy(
         
         while retries <= max_retries:
             try:
-                async for chunk in tg_client_manager.client.stream_media(msg, offset=current_offset):
+                rem_bytes = (content_length - bytes_sent) + bytes_to_skip
+                limit_chunks = (rem_bytes + chunk_size - 1) // chunk_size
+                async for chunk in tg_client_manager.client.stream_media(
+                    msg, 
+                    offset=current_offset,
+                    limit=limit_chunks
+                ):
                     if bytes_to_skip > 0:
                         if bytes_to_skip < len(chunk):
                             chunk = chunk[bytes_to_skip:]
@@ -1770,8 +1778,13 @@ async def tg_stream_proxy(
                     if bytes_sent + len(chunk) > content_length:
                         chunk = chunk[:content_length - bytes_sent]
                         
-                    yield chunk
-                    bytes_sent += len(chunk)
+                    SUB_CHUNK_SIZE = 64 * 1024
+                    for i in range(0, len(chunk), SUB_CHUNK_SIZE):
+                        sub = chunk[i:i + SUB_CHUNK_SIZE]
+                        yield sub
+                        bytes_sent += len(sub)
+                        if bytes_sent >= content_length:
+                            break
                     
                     if bytes_sent >= content_length:
                         break
@@ -1907,8 +1920,10 @@ async def tg_split_stream_proxy(
         "Content-Length": str(content_length),
         "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
     }
     if range_header:
         headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
@@ -1938,12 +1953,17 @@ async def tg_split_stream_proxy(
             local_offset = read_start - c_start
             offset_blocks = local_offset // block_size
             skip_bytes = local_offset % block_size
+            blocks_needed = (chunk_read_len + skip_bytes + block_size - 1) // block_size
             
             chunk_bytes_sent = 0
             bytes_to_skip = skip_bytes
             
             try:
-                async for block in tg_client_manager.client.stream_media(chunk["msg"], offset=offset_blocks):
+                async for block in tg_client_manager.client.stream_media(
+                    chunk["msg"], 
+                    offset=offset_blocks,
+                    limit=blocks_needed
+                ):
                     if bytes_to_skip > 0:
                         if bytes_to_skip < len(block):
                             block = block[bytes_to_skip:]
@@ -1955,10 +1975,15 @@ async def tg_split_stream_proxy(
                     if chunk_bytes_sent + len(block) > chunk_read_len:
                         block = block[:chunk_read_len - chunk_bytes_sent]
                         
-                    yield block
-                    chunk_bytes_sent += len(block)
-                    bytes_sent += len(block)
-                    
+                    SUB_CHUNK_SIZE = 64 * 1024
+                    for i in range(0, len(block), SUB_CHUNK_SIZE):
+                        sub = block[i:i + SUB_CHUNK_SIZE]
+                        yield sub
+                        chunk_bytes_sent += len(sub)
+                        bytes_sent += len(sub)
+                        if chunk_bytes_sent >= chunk_read_len:
+                            break
+                            
                     if chunk_bytes_sent >= chunk_read_len:
                         break
             except Exception as e:
@@ -2114,8 +2139,10 @@ async def tg_zip_stream_proxy(
         "Content-Length": str(content_length),
         "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
     }
     if range_header:
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
@@ -2164,12 +2191,17 @@ async def tg_zip_stream_proxy(
                 local_offset = read_start - c_start
                 offset_blocks = local_offset // block_size
                 skip_bytes = local_offset % block_size
+                blocks_needed = (chunk_read_len + skip_bytes + block_size - 1) // block_size
                 
                 chunk_bytes_sent = 0
                 bytes_to_skip = skip_bytes
                 
                 try:
-                    async for block in tg_client_manager.client.stream_media(chunk["msg"], offset=offset_blocks):
+                    async for block in tg_client_manager.client.stream_media(
+                        chunk["msg"], 
+                        offset=offset_blocks,
+                        limit=blocks_needed
+                    ):
                         if bytes_to_skip > 0:
                             if bytes_to_skip < len(block):
                                 block = block[bytes_to_skip:]
@@ -2181,10 +2213,15 @@ async def tg_zip_stream_proxy(
                         if chunk_bytes_sent + len(block) > chunk_read_len:
                             block = block[:chunk_read_len - chunk_bytes_sent]
                             
-                        yield block
-                        chunk_bytes_sent += len(block)
-                        bytes_sent += len(block)
-                        
+                        SUB_CHUNK_SIZE = 64 * 1024
+                        for i in range(0, len(block), SUB_CHUNK_SIZE):
+                            sub = block[i:i + SUB_CHUNK_SIZE]
+                            yield sub
+                            chunk_bytes_sent += len(sub)
+                            bytes_sent += len(sub)
+                            if chunk_bytes_sent >= chunk_read_len:
+                                break
+                                
                         if chunk_bytes_sent >= chunk_read_len:
                             break
                 except asyncio.CancelledError:

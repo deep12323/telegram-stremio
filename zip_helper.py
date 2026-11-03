@@ -61,6 +61,9 @@ class TelegramSeekableReader:
         except Exception as e:
             logger.error(f"Error fetching block {block_index} for part {part_index}: {e}")
             
+        if len(self.block_cache) >= 32:
+            oldest = next(iter(self.block_cache))
+            self.block_cache.pop(oldest, None)
         self.block_cache[cache_key] = block
         return block
 
