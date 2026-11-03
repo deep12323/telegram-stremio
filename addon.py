@@ -1732,10 +1732,8 @@ async def tg_stream_proxy(
         "Content-Length": str(content_length),
         "Content-Disposition": format_content_disposition(filename),
         "Connection": "keep-alive",
-        "Cache-Control": "no-cache, no-transform",
+        "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
     }
     # Content-Range MUST only be sent with 206 Partial Content, not 200.
     # Sending it on 200 confuses video players and causes playback failures.
@@ -1760,13 +1758,7 @@ async def tg_stream_proxy(
         
         while retries <= max_retries:
             try:
-                rem_bytes = (content_length - bytes_sent) + bytes_to_skip
-                limit_chunks = (rem_bytes + chunk_size - 1) // chunk_size
-                async for chunk in tg_client_manager.client.stream_media(
-                    msg, 
-                    offset=current_offset,
-                    limit=limit_chunks
-                ):
+                async for chunk in tg_client_manager.client.stream_media(msg, offset=current_offset):
                     if bytes_to_skip > 0:
                         if bytes_to_skip < len(chunk):
                             chunk = chunk[bytes_to_skip:]
@@ -2231,6 +2223,4 @@ async def tg_zip_stream_proxy(
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-    is_debug = os.getenv("DEBUG", "false").lower() in ("true", "1")
-    uvicorn.run("addon:app", host="0.0.0.0", port=Config.PORT, reload=is_debug, timeout_keep_alive=300)
+    uvicorn.run("addon:app", host="0.0.0.0", port=Config.PORT, reload=True, timeout_keep_alive=300)
