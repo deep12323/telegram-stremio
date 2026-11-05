@@ -357,6 +357,7 @@ class TelegramClientManager:
     def __init__(self):
         self.client = None
         self.is_running = False
+        self._start_lock = None
         self._search_cache = {}
         self._message_cache = {}
         self._log_cache = {}
@@ -412,14 +413,64 @@ class TelegramClientManager:
                 ids.append(p)
         return ids
 
+    async def _precache_peers(self):
+        """Asynchronously pre-cache recent dialogs and target channels in the background."""
+        try:
+            # 1. Pre-cache recent user dialogs to populate Pyrogram's in-memory peer table
+            if Config.USER_SESSION_STRING and self.client:
+                try:
+                    logger.info("Pre-caching recent user dialogs and channel access hashes in background...")
+                    async def _cache_dialogs():
+                        count = 0
+                        async for _ in self.client.get_dialogs(limit=100):
+                            count += 1
+                        return count
+
+                    count = await asyncio.wait_for(_cache_dialogs(), timeout=25.0)
+                    logger.info(f"User dialogs cached successfully ({count} dialogs).")
+                except asyncio.TimeoutError:
+                    logger.warning("Pre-caching user dialogs timed out after 25s; continuing.")
+                except Exception as e:
+                    logger.warning(f"Failed to pre-cache dialogs: {e}")
+
+            # 2. Resolve target channels if configured
+            chat_ids = self.get_channel_ids()
+            for chat_id in chat_ids:
+                try:
+                    await asyncio.wait_for(self.client.get_chat(chat_id), timeout=10.0)
+                    logger.info(f"Target channel {chat_id} resolved and cached.")
+                except Exception as e:
+                    logger.warning(f"Failed to cache channel {chat_id}: {e}")
+
+            if Config.LOG_CHANNEL_ID:
+                try:
+                    await asyncio.wait_for(self.client.get_chat(Config.LOG_CHANNEL_ID), timeout=10.0)
+                    logger.info(f"Log channel {Config.LOG_CHANNEL_ID} resolved and cached.")
+                except Exception as e:
+                    logger.warning(f"Failed to cache log channel {Config.LOG_CHANNEL_ID}: {e}")
+        except Exception as e:
+            logger.warning(f"Background peer pre-caching encountered an error: {e}")
+
     async def start(self):
-        if not self.client:
-            self.initialize()
-        
-        if not self.is_running:
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+
+        async with self._start_lock:
+            if self.is_running:
+                return
+
+            if not self.client:
+                self.initialize()
+
             logger.info("Starting Pyrogram client...")
             try:
-                is_authorized = await self.client.connect()
+                is_authorized = await asyncio.wait_for(self.client.connect(), timeout=20.0)
+            except asyncio.TimeoutError:
+                try:
+                    await self.client.disconnect()
+                except Exception:
+                    pass
+                raise RuntimeError("Telegram client connect timed out after 20 seconds!")
             except Exception as e:
                 try:
                     await self.client.disconnect()
@@ -443,45 +494,21 @@ class TelegramClientManager:
                     "Your USER_SESSION_STRING or BOT_TOKEN is invalid, expired, or missing. "
                     "Please check your GitHub repository secrets / environment variables."
                 )
+
             self.is_running = True
-            
-            # Pre-cache user dialogs to populate Pyrogram's in-memory peer table
-            # This prevents PeerIdInvalid errors when streaming from channels found in global search
-            if Config.USER_SESSION_STRING:
-                try:
-                    logger.info("Pre-caching user dialogs and channel access hashes...")
-                    async for _ in self.client.get_dialogs(limit=300):
-                        pass
-                    logger.info("User dialogs cached successfully.")
-                except Exception as e:
-                    logger.warning(f"Failed to pre-cache dialogs: {e}")
-            
-            # Resolve target channels if configured
-            try:
-                chat_ids = self.get_channel_ids()
-                for chat_id in chat_ids:
-                    try:
-                        await self.client.get_chat(chat_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to cache channel {chat_id}: {e}")
-                        
-                if Config.LOG_CHANNEL_ID:
-                    try:
-                        await self.client.get_chat(Config.LOG_CHANNEL_ID)
-                    except Exception as e:
-                        logger.warning(f"Failed to cache log channel {Config.LOG_CHANNEL_ID}: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to resolve target channels on startup: {e}")
-            
-            logger.info("Using Telegram global search across all channels in the account.")
+            logger.info("Telegram client connected and authorized successfully.")
+
+            # Trigger background peer pre-caching so startup returns immediately without blocking port 7860
+            asyncio.create_task(self._precache_peers())
 
     async def stop(self):
         if self.is_running and self.client:
             logger.info("Stopping Pyrogram client...")
             try:
-                await asyncio.wait_for(self.client.stop(), timeout=3.0)
+                if hasattr(self.client, "is_connected") and self.client.is_connected:
+                    await asyncio.wait_for(self.client.disconnect(), timeout=3.0)
             except asyncio.TimeoutError:
-                logger.warning("Pyrogram client stop timed out, skipping...")
+                logger.warning("Pyrogram client disconnect timed out, skipping...")
             except Exception as e:
                 logger.warning(f"Error stopping Pyrogram client: {e}")
             self.is_running = False

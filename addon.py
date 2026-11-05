@@ -76,12 +76,13 @@ logger = logging.getLogger("stremio_addon")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        print("\n" + "=" * 60)
-        print("   TELEGRAM ADDON")
-        print("   For educational and personal testing only.")
-        print("=" * 60 + "\n")
-        
+    print("\n" + "=" * 60)
+    print("   TELEGRAM ADDON")
+    print("   For educational and personal testing only.")
+    print("=" * 60 + "\n")
+
+    # Start Pyrogram client in the background so FastAPI/Uvicorn binds port 7860 immediately
+    async def _init_client():
         try:
             Config.validate()
             await tg_client_manager.start()
@@ -90,8 +91,16 @@ async def lifespan(app: FastAPI):
                 f"Configuration validation deferred: {e}. "
                 "Please configure your API credentials through the web setup panel."
             )
+        except Exception as e:
+            logger.error(f"Error during Telegram client background initialization: {e}", exc_info=True)
+
+    init_task = asyncio.create_task(_init_client())
+
+    try:
         yield
     finally:
+        if not init_task.done():
+            init_task.cancel()
         await tg_client_manager.stop()
 
 app = FastAPI(lifespan=lifespan)
@@ -215,6 +224,14 @@ def get_manifest(api_key: str = ""):
             "configurable": True,
             "configurationRequired": False
         }
+    }
+
+@app.get("/healthz")
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "telegram_connected": tg_client_manager.is_running
     }
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
